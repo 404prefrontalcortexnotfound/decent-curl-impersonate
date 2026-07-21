@@ -13,6 +13,25 @@ import {
 const DEFAULT_DIAGNOSTIC_BYTES = 16 * 1024;
 const MAX_PROTOCOL_LINE_BYTES = 10 * 1024 * 1024;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 2_000;
+const STABLE_WORKER_ERROR_CODES = new Set([
+  "destination_exists",
+  "duplicate_request_id",
+  "file_error",
+  "internal_error",
+  "invalid_destination",
+  "invalid_params",
+  "invalid_profile",
+  "invalid_request",
+  "invalid_upload",
+  "invalid_url",
+  "malformed_json",
+  "network_error",
+  "request_cancelled",
+  "timeout",
+  "unknown_operation",
+  "unknown_session",
+  "worker_error",
+]);
 
 export interface WorkerClientOptions {
   command?: string;
@@ -290,7 +309,7 @@ function cancellationError(): DOMException {
 }
 
 function safeCode(code: string): string {
-  return /^[a-z0-9_.-]{1,80}$/i.test(code) ? code : "worker_error";
+  return STABLE_WORKER_ERROR_CODES.has(code) ? code : "worker_error";
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

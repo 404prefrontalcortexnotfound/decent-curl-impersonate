@@ -33,6 +33,19 @@ lines.on("line", (line) => {
     return;
   }
 
+  if (mode === "secret-error-code") {
+    respond({
+      id: request.id,
+      ok: false,
+      error: {
+        code: "token-S3CR3T",
+        message: "untrusted worker message",
+        retryable: false,
+      },
+    });
+    return;
+  }
+
   if (request.params.control === "wait") return;
 
   if (request.params.control === "crash") {

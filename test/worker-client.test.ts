@@ -74,6 +74,23 @@ describe("WorkerClient", () => {
     }
   });
 
+  test("maps unknown worker error codes without echoing their value", async () => {
+    const worker = client("secret-error-code");
+
+    try {
+      await worker.call("request.execute", {});
+      throw new Error("expected worker call to fail");
+    } catch (error) {
+      expect(error).toMatchObject({
+        name: "WorkerCallError",
+        code: "worker_error",
+        retryable: false,
+      });
+      expect(String(error)).toBe("WorkerCallError: Worker operation failed (worker_error)");
+      expect(String(error)).not.toContain("token-S3CR3T");
+    }
+  });
+
   test("rejects a cancelled call and ignores its later response", async () => {
     const worker = client();
     const controller = new AbortController();

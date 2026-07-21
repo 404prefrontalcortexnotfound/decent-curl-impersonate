@@ -51,6 +51,7 @@ export function createToolDefinitions(worker: WorkerCaller): ToolDefinition<any,
       async execute(_id, params, signal): Promise<ToolResult> {
         const result = asRecord(await worker.call("download.execute", asRecord(params), signal));
         const details = pick(result, ["path", "size", "content_type", "status", "url", "profile", "sha256"]);
+        sanitizeUrlMetadata(details);
         const path = typeof details.path === "string" ? details.path : "unknown path";
         const size = typeof details.size === "number" ? ` (${details.size} bytes)` : "";
         return { content: [{ type: "text", text: `Downloaded to ${path}${size}` }], details };
@@ -113,6 +114,7 @@ async function responseResult(result: Record<string, unknown>): Promise<ToolResu
     "profile",
     "body_encoding",
   ]);
+  sanitizeUrlMetadata(details);
   const headers = safeHeaders(result.headers);
   if (Object.keys(headers).length > 0) details.headers = headers;
   const cookies = safeCookies(result.cookies);
@@ -169,6 +171,16 @@ function pick(record: Record<string, unknown>, keys: readonly string[]): Record<
     if (value === null || ["string", "number", "boolean"].includes(typeof value)) result[key] = value;
   }
   return result;
+}
+
+function sanitizeUrlMetadata(details: Record<string, unknown>): void {
+  if (typeof details.url !== "string") return;
+  try {
+    const url = new URL(details.url);
+    details.url = `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    delete details.url;
+  }
 }
 
 function safeHeaders(value: unknown): Record<string, string> {

@@ -147,6 +147,39 @@ describe("Pi tool dispatch", () => {
     expect(result.details).toMatchObject({ status: 200, profile: "chrome" });
   });
 
+  test("sanitizes request result URLs without changing response content", async () => {
+    const worker = new RecordingWorker();
+    worker.result = {
+      body: "unchanged response",
+      status: 200,
+      url: "https://user:password@example.test/final?api_key=key-S3CR3T&token=token-S3CR3T",
+    };
+
+    const result = await execute(createToolDefinitions(worker)[0], { url: "https://example.test" });
+
+    expect(result.content).toEqual([{ type: "text", text: "unchanged response" }]);
+    expect(result.details.url).toBe("https://example.test/final");
+    expect(JSON.stringify(result.details)).not.toContain("S3CR3T");
+    expect(JSON.stringify(result.details)).not.toContain("user:password");
+  });
+
+  test("sanitizes download result URLs without changing download content", async () => {
+    const worker = new RecordingWorker();
+    worker.result = {
+      path: "/tmp/archive.bin",
+      size: 42,
+      status: 200,
+      url: "https://user:password@example.test/archive?api_key=key-S3CR3T&token=token-S3CR3T",
+    };
+
+    const result = await execute(createToolDefinitions(worker)[1], { url: "https://example.test/archive" });
+
+    expect(result.content).toEqual([{ type: "text", text: "Downloaded to /tmp/archive.bin (42 bytes)" }]);
+    expect(result.details.url).toBe("https://example.test/archive");
+    expect(JSON.stringify(result.details)).not.toContain("S3CR3T");
+    expect(JSON.stringify(result.details)).not.toContain("user:password");
+  });
+
   test("dispatches download and profile operations", async () => {
     const worker = new RecordingWorker();
     const tools = createToolDefinitions(worker);
