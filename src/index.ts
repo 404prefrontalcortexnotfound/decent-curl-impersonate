@@ -50,7 +50,7 @@ export function registerDecentCurlExtension(
     handler: async (_args, ctx) => {
       ctx.ui.notify("Running decent-curl setup visibly with uv...", "info");
       try {
-        await runVisible("uv", ["sync", "--frozen", "--python", "3.13"], packageRoot);
+        await runVisible("uv", ["sync", "--frozen", "--python", "3.13", "--no-dev"], packageRoot);
         ctx.ui.notify("decent-curl setup complete.", "info");
       } catch {
         ctx.ui.notify("decent-curl setup failed. See the visible uv output above.", "error");

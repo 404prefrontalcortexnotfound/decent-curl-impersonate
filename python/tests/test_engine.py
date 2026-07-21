@@ -2,11 +2,15 @@ import asyncio
 import base64
 import json
 from collections.abc import Awaitable
+from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TypeVar
 
 import pytest
 from curl_cffi import CurlHttpVersion
+from curl_cffi.const import CurlECode
+from curl_cffi.requests.errors import RequestsError
 from websockets.asyncio.server import serve
 
 from decent_curl_impersonate.engine import CurlEngine, EngineError
@@ -181,6 +185,67 @@ def test_multipart_upload_uses_local_file(http_server: str, secure_tmp_path: Pat
     assert "sample" in echoed["body"]
     assert 'filename="upload.txt"' in echoed["body"]
     assert "uploaded-private-content" in echoed["body"]
+
+
+def test_multipart_retry_rebuilds_and_closes_each_mime_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeMime:
+        instances: list["FakeMime"] = []
+
+        def __init__(self) -> None:
+            self.close_count = 0
+            self.parts: list[tuple[tuple[object, ...], dict[str, object]]] = []
+            self.instances.append(self)
+
+        def addpart(self, *args: object, **kwargs: object) -> None:
+            self.parts.append((args, kwargs))
+
+        def close(self) -> None:
+            self.close_count += 1
+
+    class RetryOnceSession:
+        seen_mimes: list[FakeMime] = []
+
+        async def request(self, **kwargs: object) -> object:
+            self.seen_mimes.append(kwargs["multipart"])
+            if len(self.seen_mimes) == 1:
+                raise RequestsError("retry once", CurlECode.RECV_ERROR)
+            return SimpleNamespace(
+                content=b"ok",
+                encoding="utf-8",
+                headers={},
+                cookies=SimpleNamespace(jar=[]),
+                elapsed=timedelta(),
+                reason="OK",
+                url="https://example.test/upload",
+                status_code=200,
+                http_version=CurlHttpVersion.V1_1,
+            )
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("decent_curl_impersonate.engine.CurlMime", FakeMime)
+    monkeypatch.setattr("decent_curl_impersonate.engine.AsyncSession", RetryOnceSession)
+
+    result = run(
+        one(
+            "request.execute",
+            {
+                "method": "POST",
+                "url": "https://example.test/upload",
+                "multipart": {"description": {"value": "sample"}},
+                "retries": 1,
+            },
+        )
+    )
+
+    assert result["status"] == 200
+    assert len(RetryOnceSession.seen_mimes) == 2
+    assert RetryOnceSession.seen_mimes[0] is not RetryOnceSession.seen_mimes[1]
+    assert FakeMime.instances == RetryOnceSession.seen_mimes
+    assert [mime.close_count for mime in FakeMime.instances] == [1, 1]
 
 
 def test_basic_bearer_and_custom_headers(http_server: str) -> None:

@@ -332,22 +332,23 @@ class CurlEngine:
 
     async def _request_execute(self, params: dict[str, Any]) -> dict[str, Any]:
         session, should_close, default_profile = self._select_session(params)
-        mime: CurlMime | None = None
         try:
             profile = self._profile(params.get("profile", default_profile))
-            kwargs, mime = self._request_kwargs(params, profile)
             retries = self._nonnegative_int(params.get("retries", 0), "retries")
             for attempt in range(retries + 1):
+                mime: CurlMime | None = None
                 try:
+                    kwargs, mime = self._request_kwargs(params, profile)
                     response = await session.request(**kwargs)
                     return self._response_result(response, profile)
                 except RequestsError as error:
                     if attempt < retries:
                         continue
                     raise self._network_error(error) from None
+                finally:
+                    if mime is not None:
+                        mime.close()
         finally:
-            if mime is not None:
-                mime.close()
             if should_close:
                 await session.close()
         raise AssertionError("request retry loop did not return")

@@ -258,7 +258,7 @@ describe("extension lifecycle and commands", () => {
     expect(stops).toBe(2);
   });
 
-  test("runs frozen Python 3.13 setup visibly", async () => {
+  test("runs frozen Python 3.13 setup without development dependencies visibly", async () => {
     const invocations: any[] = [];
     const notifications: any[] = [];
     const commands = new Map<string, any>();
@@ -281,7 +281,7 @@ describe("extension lifecycle and commands", () => {
 
     expect(invocations).toEqual([{
       command: "uv",
-      args: ["sync", "--frozen", "--python", "3.13"],
+      args: ["sync", "--frozen", "--python", "3.13", "--no-dev"],
       cwd: "/package root",
     }]);
     expect(notifications.flat().join(" ")).toContain("complete");

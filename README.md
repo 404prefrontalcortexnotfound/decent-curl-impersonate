@@ -15,7 +15,7 @@ After this package is published:
 pi install npm:decent-curl-impersonate
 ```
 
-Start Pi and run `/decent-curl-setup`. This visibly runs `uv sync --frozen --python 3.13` in the installed package and creates its local `.venv`. The npm package has **no install/postinstall lifecycle hook** and never silently downloads or executes Python dependencies. Run `/decent-curl-status` to see extension, Python, `curl_cffi`, libcurl, and profile information.
+Start Pi and run `/decent-curl-setup`. This visibly runs `uv sync --frozen --python 3.13 --no-dev` in the installed package and creates its local `.venv` with runtime dependencies only. It does not install the `pytest` or `websockets` development dependencies; WebSocket support at runtime remains provided by `curl_cffi`. The npm package has **no install/postinstall lifecycle hook** and never silently downloads or executes Python dependencies. Run `/decent-curl-status` to see extension, Python, `curl_cffi`, libcurl, and profile information.
 
 For a source checkout:
 
