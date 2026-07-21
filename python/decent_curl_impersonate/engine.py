@@ -230,6 +230,11 @@ class CurlEngine:
         except asyncio.TimeoutError:
             raise EngineError("timeout", "WebSocket send timed out", retryable=True) from None
         except WebSocketError as error:
+            if error.code != CurlECode.OPERATION_TIMEDOUT:
+                try:
+                    await self._evict_terminal_websocket(websocket_id, handle)
+                finally:
+                    raise self._network_error(error) from None
             raise self._network_error(error) from None
         return {
             "websocket_id": websocket_id,
@@ -247,6 +252,11 @@ class CurlEngine:
                 "timeout", "WebSocket receive timed out", retryable=True
             ) from None
         except WebSocketError as error:
+            if error.code != CurlECode.OPERATION_TIMEDOUT:
+                try:
+                    await self._evict_terminal_websocket(websocket_id, handle)
+                finally:
+                    raise self._network_error(error) from None
             raise self._network_error(error) from None
 
         if flags & CurlWsFlag.CLOSE:
@@ -302,6 +312,14 @@ class CurlEngine:
         finally:
             if handle.close_session:
                 await handle.session.close()
+
+    async def _evict_terminal_websocket(
+        self, websocket_id: str, handle: _WebSocketHandle
+    ) -> None:
+        if self._websockets.get(websocket_id) is handle:
+            self._websockets.pop(websocket_id)
+        if handle.close_session:
+            await handle.session.close()
 
     def _websocket_handle(
         self, params: dict[str, Any]

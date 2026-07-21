@@ -14,8 +14,13 @@ let worker: WorkerClient;
 let server: ReturnType<typeof Bun.serve>;
 let temporaryDirectory: string;
 let activeWebSockets = 0;
+let slowObserved: Promise<void>;
+let resolveSlowObserved: () => void;
 
 beforeAll(async () => {
+  slowObserved = new Promise((resolvePromise) => {
+    resolveSlowObserved = resolvePromise;
+  });
   server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -39,6 +44,7 @@ beforeAll(async () => {
         });
       }
       if (url.pathname === "/slow") {
+        resolveSlowObserved();
         return new Promise((resolveResponse) => {
           setTimeout(() => resolveResponse(new Response("late")), 500);
         });
@@ -123,8 +129,10 @@ describe("Bun to package-local Python worker contract", () => {
 
     const controller = new AbortController();
     const slow = worker.call("request.execute", { url: endpoint("/slow") }, controller.signal);
+    await slowObserved;
     controller.abort();
     await expect(slow).rejects.toMatchObject({ name: "AbortError" });
+    await expect(worker.call("profiles.list", {})).resolves.toMatchObject({ profiles: expect.any(Array) });
 
     const connected = await worker.call("websocket.connect", {
       url: `ws://127.0.0.1:${server.port}/ws`,

@@ -511,6 +511,97 @@ def test_websocket_connect_does_not_return_handshake_cookies() -> None:
     run(scenario())
 
 
+def test_websocket_receive_error_evicts_handle_and_closes_dedicated_session() -> None:
+    async def scenario() -> None:
+        peer_connected = asyncio.Event()
+        abort_peer = asyncio.Event()
+        peer_aborted = asyncio.Event()
+
+        async def disconnect(websocket: object) -> None:
+            peer_connected.set()
+            await abort_peer.wait()
+            websocket.transport.abort()  # type: ignore[attr-defined]
+            peer_aborted.set()
+
+        async with serve(disconnect, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            engine = CurlEngine()
+            try:
+                connected = await engine.dispatch(
+                    "websocket.connect", {"url": f"ws://127.0.0.1:{port}/disconnect"}
+                )
+                websocket_id = connected["websocket_id"]
+                handle = engine._websockets[websocket_id]
+                await peer_connected.wait()
+                abort_peer.set()
+                await peer_aborted.wait()
+
+                with pytest.raises(EngineError) as error:
+                    await engine.dispatch(
+                        "websocket.receive", {"websocket_id": websocket_id, "timeout": 1}
+                    )
+
+                assert error.value.code == "network_error"
+                assert websocket_id not in engine._websockets
+                assert handle.session._closed is True
+            finally:
+                await engine.close()
+
+    run(scenario())
+
+
+@pytest.mark.parametrize("use_named_session", [False, True])
+def test_websocket_send_error_evicts_handle_and_respects_session_ownership(
+    use_named_session: bool,
+) -> None:
+    async def scenario() -> None:
+        peer_connected = asyncio.Event()
+        abort_peer = asyncio.Event()
+        peer_aborted = asyncio.Event()
+
+        async def disconnect(websocket: object) -> None:
+            peer_connected.set()
+            await abort_peer.wait()
+            websocket.transport.abort()  # type: ignore[attr-defined]
+            peer_aborted.set()
+
+        async with serve(disconnect, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            engine = CurlEngine()
+            try:
+                connect_params = {"url": f"ws://127.0.0.1:{port}/disconnect"}
+                session_id = None
+                if use_named_session:
+                    created = await engine.dispatch("session.create", {})
+                    session_id = created["session_id"]
+                    connect_params["session_id"] = session_id
+                connected = await engine.dispatch("websocket.connect", connect_params)
+                websocket_id = connected["websocket_id"]
+                handle = engine._websockets[websocket_id]
+                await peer_connected.wait()
+                abort_peer.set()
+                await peer_aborted.wait()
+                await asyncio.sleep(0.05)
+
+                with pytest.raises(EngineError) as error:
+                    await engine.dispatch(
+                        "websocket.send",
+                        {"websocket_id": websocket_id, "message": "after disconnect"},
+                    )
+
+                assert error.value.code == "network_error"
+                assert websocket_id not in engine._websockets
+                assert handle.session._closed is not use_named_session
+                if session_id is not None:
+                    assert await engine.dispatch("session.list", {}) == {
+                        "sessions": [{"session_id": session_id, "profile": None}]
+                    }
+            finally:
+                await engine.close()
+
+    run(scenario())
+
+
 def test_engine_shutdown_closes_active_websockets() -> None:
     async def scenario() -> None:
         disconnected = asyncio.Event()
