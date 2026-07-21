@@ -12,9 +12,13 @@
   ],
   "files": [
     "dist",
-    "python",
+    "python/decent_curl_impersonate/*.py",
     "pyproject.toml",
-    "uv.lock"
+    "uv.lock",
+    "upstream",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "pi": {
     "extensions": [

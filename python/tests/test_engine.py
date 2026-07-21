@@ -7,6 +7,7 @@ from typing import TypeVar
 
 import pytest
 from curl_cffi import CurlHttpVersion
+from websockets.asyncio.server import serve
 
 from decent_curl_impersonate.engine import CurlEngine, EngineError
 
@@ -31,6 +32,19 @@ def test_profiles_are_discovered_from_installed_curl_cffi() -> None:
     assert result["profiles"]
     assert {"chrome", "firefox", "safari"} <= set(result["families"])
     assert all(isinstance(profile, str) for profile in result["profiles"])
+
+
+def test_fingerprint_diagnostic_uses_request_result_shape(http_server: str) -> None:
+    result = run(
+        one(
+            "diagnostic.fingerprint",
+            {"url": f"{http_server}/echo"},
+        )
+    )
+
+    assert result["status"] == 200
+    assert result["url"] == f"{http_server}/echo"
+    assert result["body_encoding"] == "utf-8"
 
 
 def test_get_query_and_result_shape(http_server: str) -> None:
@@ -387,3 +401,134 @@ def test_download_removes_partial_file_after_stream_failure(
 
     assert error.value.code == "network_error"
     assert not destination.exists()
+
+
+def test_websocket_text_binary_timeout_close_and_unknown_handle() -> None:
+    async def scenario() -> None:
+        async def echo(websocket: object) -> None:
+            async for message in websocket:  # type: ignore[attr-defined]
+                await websocket.send(message)  # type: ignore[attr-defined]
+
+        async with serve(echo, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            engine = CurlEngine()
+            try:
+                connected = await engine.dispatch(
+                    "websocket.connect", {"url": f"ws://127.0.0.1:{port}/echo"}
+                )
+                websocket_id = connected["websocket_id"]
+                assert connected == {
+                    "websocket_id": websocket_id,
+                    "connected": True,
+                    "profile": None,
+                }
+
+                sent_text = await engine.dispatch(
+                    "websocket.send",
+                    {"websocket_id": websocket_id, "message": "hello"},
+                )
+                assert sent_text == {
+                    "websocket_id": websocket_id,
+                    "sent": True,
+                    "message_type": "text",
+                }
+                assert await engine.dispatch(
+                    "websocket.receive", {"websocket_id": websocket_id}
+                ) == {
+                    "websocket_id": websocket_id,
+                    "message_type": "text",
+                    "message": "hello",
+                }
+
+                binary = b"binary\x00message"
+                await engine.dispatch(
+                    "websocket.send",
+                    {
+                        "websocket_id": websocket_id,
+                        "data_base64": base64.b64encode(binary).decode("ascii"),
+                    },
+                )
+                assert await engine.dispatch(
+                    "websocket.receive", {"websocket_id": websocket_id}
+                ) == {
+                    "websocket_id": websocket_id,
+                    "message_type": "binary",
+                    "data_base64": base64.b64encode(binary).decode("ascii"),
+                }
+
+                with pytest.raises(EngineError) as timeout:
+                    await engine.dispatch(
+                        "websocket.receive",
+                        {"websocket_id": websocket_id, "timeout": 0.01},
+                    )
+                assert timeout.value.code == "timeout"
+                assert timeout.value.retryable is True
+
+                assert await engine.dispatch(
+                    "websocket.close",
+                    {"websocket_id": websocket_id, "code": 1000, "reason": "done"},
+                ) == {"websocket_id": websocket_id, "closed": True}
+
+                with pytest.raises(EngineError) as unknown:
+                    await engine.dispatch(
+                        "websocket.receive", {"websocket_id": websocket_id}
+                    )
+                assert unknown.value.code == "unknown_websocket"
+            finally:
+                await engine.close()
+
+    run(scenario())
+
+
+def test_websocket_connect_does_not_return_handshake_cookies() -> None:
+    async def scenario() -> None:
+        async def echo(websocket: object) -> None:
+            await websocket.wait_closed()  # type: ignore[attr-defined]
+
+        async def set_handshake_cookie(
+            _connection: object, _request: object, response: object
+        ) -> object:
+            response.headers["Set-Cookie"] = "handshake=server-secret"  # type: ignore[attr-defined]
+            return response
+
+        async with serve(
+            echo, "127.0.0.1", 0, process_response=set_handshake_cookie
+        ) as server:
+            port = server.sockets[0].getsockname()[1]
+            engine = CurlEngine()
+            try:
+                result = await engine.dispatch(
+                    "websocket.connect",
+                    {
+                        "url": f"ws://127.0.0.1:{port}/echo",
+                        "headers": {"Cookie": "private-cookie=value"},
+                    },
+                )
+                assert "cookie" not in json.dumps(result).lower()
+            finally:
+                await engine.close()
+
+    run(scenario())
+
+
+def test_engine_shutdown_closes_active_websockets() -> None:
+    async def scenario() -> None:
+        disconnected = asyncio.Event()
+
+        async def echo(websocket: object) -> None:
+            try:
+                await websocket.wait_closed()  # type: ignore[attr-defined]
+            finally:
+                disconnected.set()
+
+        async with serve(echo, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            engine = CurlEngine()
+            connected = await engine.dispatch(
+                "websocket.connect", {"url": f"ws://127.0.0.1:{port}/echo"}
+            )
+            assert connected["connected"] is True
+            await engine.close()
+            await asyncio.wait_for(disconnected.wait(), timeout=1)
+
+    run(scenario())

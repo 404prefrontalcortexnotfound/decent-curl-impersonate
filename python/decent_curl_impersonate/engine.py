@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import os
@@ -12,10 +13,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from curl_cffi import CurlHttpVersion, CurlMime
+from curl_cffi import CurlHttpVersion, CurlMime, CurlWsFlag
 from curl_cffi.const import CurlECode
 from curl_cffi.requests import AsyncSession, BrowserType, Response
 from curl_cffi.requests.errors import RequestsError
+from curl_cffi.requests.websockets import AsyncWebSocket, WebSocketError
 
 
 class EngineError(Exception):
@@ -38,6 +40,14 @@ class EngineError(Exception):
 @dataclass
 class _NamedSession:
     session: AsyncSession
+    profile: str | None
+
+
+@dataclass
+class _WebSocketHandle:
+    websocket: AsyncWebSocket
+    session: AsyncSession
+    close_session: bool
     profile: str | None
 
 
@@ -64,6 +74,7 @@ class CurlEngine:
 
     def __init__(self) -> None:
         self._sessions: dict[str, _NamedSession] = {}
+        self._websockets: dict[str, _WebSocketHandle] = {}
 
     async def dispatch(self, operation: str, params: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(params, dict):
@@ -75,6 +86,11 @@ class CurlEngine:
             "session.create": self._session_create,
             "session.list": self._session_list,
             "session.close": self._session_close,
+            "websocket.connect": self._websocket_connect,
+            "websocket.send": self._websocket_send,
+            "websocket.receive": self._websocket_receive,
+            "websocket.close": self._websocket_close,
+            "diagnostic.fingerprint": self._diagnostic_fingerprint,
         }
         handler = handlers.get(operation)
         if handler is None:
@@ -86,6 +102,10 @@ class CurlEngine:
         return await handler(params)
 
     async def close(self) -> None:
+        websockets = list(self._websockets.values())
+        self._websockets.clear()
+        for handle in websockets:
+            await self._close_websocket(handle)
         sessions = list(self._sessions.values())
         self._sessions.clear()
         for named in sessions:
@@ -127,6 +147,170 @@ class CurlEngine:
             raise EngineError("unknown_session", "Unknown session ID")
         await named.session.close()
         return {"session_id": session_id, "closed": True}
+
+    async def _diagnostic_fingerprint(self, params: dict[str, Any]) -> dict[str, Any]:
+        request_params = {
+            "url": params.get("url", "https://tls.browserleaks.com/json"),
+            "profile": params.get("profile"),
+            "allow_redirects": "safe",
+            "timeout": 30,
+        }
+        return await self._request_execute(request_params)
+
+    async def _websocket_connect(self, params: dict[str, Any]) -> dict[str, Any]:
+        url = self._required_string(params, "url")
+        parsed = urlparse(url)
+        if parsed.scheme not in {"ws", "wss"} or not parsed.netloc:
+            raise EngineError("invalid_url", "URL must use WebSocket WS or WSS")
+        if parsed.username is not None or parsed.password is not None:
+            raise EngineError("invalid_url", "URL must not contain credentials")
+        headers = params.get("headers", {})
+        if not isinstance(headers, dict) or not all(
+            isinstance(name, str) and isinstance(value, str)
+            for name, value in headers.items()
+        ):
+            raise EngineError("invalid_params", "headers must contain string names and values")
+
+        session, should_close, default_profile = self._select_session(params)
+        profile = self._profile(params.get("profile", default_profile))
+        timeout = self._optional_timeout(params.get("timeout"))
+        kwargs = {
+            "headers": dict(headers),
+            "proxy": params.get("proxy"),
+            "verify": params.get("verify"),
+            "impersonate": profile,
+            "timeout": timeout,
+        }
+        try:
+            websocket = await session.ws_connect(
+                url, **{key: value for key, value in kwargs.items() if value is not None}
+            )
+        except (RequestsError, WebSocketError) as error:
+            if should_close:
+                await session.close()
+            raise self._network_error(error) from None
+        except Exception:
+            if should_close:
+                await session.close()
+            raise
+
+        websocket_id = str(uuid.uuid4())
+        self._websockets[websocket_id] = _WebSocketHandle(
+            websocket, session, should_close, profile
+        )
+        # Deliberately exclude handshake response headers and cookies.
+        return {"websocket_id": websocket_id, "connected": True, "profile": profile}
+
+    async def _websocket_send(self, params: dict[str, Any]) -> dict[str, Any]:
+        websocket_id, handle = self._websocket_handle(params)
+        has_text = params.get("message") is not None
+        has_binary = params.get("data_base64") is not None
+        if has_text == has_binary:
+            raise EngineError(
+                "invalid_params", "Supply exactly one of message or data_base64"
+            )
+        timeout = self._optional_timeout(params.get("timeout"))
+        if has_text:
+            payload = params["message"]
+            if not isinstance(payload, str):
+                raise EngineError("invalid_params", "message must be a string")
+            flags = CurlWsFlag.TEXT
+            message_type = "text"
+        else:
+            try:
+                payload = base64.b64decode(params["data_base64"], validate=True)
+            except (TypeError, ValueError):
+                raise EngineError(
+                    "invalid_params", "data_base64 must be valid base64"
+                ) from None
+            flags = CurlWsFlag.BINARY
+            message_type = "binary"
+        try:
+            await handle.websocket.send(payload, flags=flags, timeout=timeout)
+        except asyncio.TimeoutError:
+            raise EngineError("timeout", "WebSocket send timed out", retryable=True) from None
+        except WebSocketError as error:
+            raise self._network_error(error) from None
+        return {
+            "websocket_id": websocket_id,
+            "sent": True,
+            "message_type": message_type,
+        }
+
+    async def _websocket_receive(self, params: dict[str, Any]) -> dict[str, Any]:
+        websocket_id, handle = self._websocket_handle(params)
+        timeout = self._optional_timeout(params.get("timeout"))
+        try:
+            payload, flags = await handle.websocket.recv(timeout=timeout)
+        except asyncio.TimeoutError:
+            raise EngineError(
+                "timeout", "WebSocket receive timed out", retryable=True
+            ) from None
+        except WebSocketError as error:
+            raise self._network_error(error) from None
+
+        if flags & CurlWsFlag.CLOSE:
+            self._websockets.pop(websocket_id, None)
+            await self._close_websocket(handle)
+            code = int.from_bytes(payload[:2], "big") if len(payload) >= 2 else 1005
+            reason = payload[2:].decode("utf-8", "replace")
+            return {
+                "websocket_id": websocket_id,
+                "closed": True,
+                "code": code,
+                "reason": reason,
+            }
+        if flags & CurlWsFlag.TEXT:
+            try:
+                message = payload.decode("utf-8")
+            except UnicodeDecodeError:
+                raise EngineError(
+                    "network_error", "WebSocket text message is not valid UTF-8"
+                ) from None
+            return {
+                "websocket_id": websocket_id,
+                "message_type": "text",
+                "message": message,
+            }
+        return {
+            "websocket_id": websocket_id,
+            "message_type": "binary",
+            "data_base64": base64.b64encode(payload).decode("ascii"),
+        }
+
+    async def _websocket_close(self, params: dict[str, Any]) -> dict[str, Any]:
+        websocket_id, handle = self._websocket_handle(params)
+        code = params.get("code", 1000)
+        if not isinstance(code, int) or isinstance(code, bool) or not 0 <= code <= 65535:
+            raise EngineError("invalid_params", "code must be an integer from 0 to 65535")
+        reason = params.get("reason", "")
+        if not isinstance(reason, str):
+            raise EngineError("invalid_params", "reason must be a string")
+        self._websockets.pop(websocket_id, None)
+        try:
+            await handle.websocket.close(code=code, message=reason.encode("utf-8"))
+        except WebSocketError as error:
+            raise self._network_error(error) from None
+        finally:
+            if handle.close_session:
+                await handle.session.close()
+        return {"websocket_id": websocket_id, "closed": True}
+
+    async def _close_websocket(self, handle: _WebSocketHandle) -> None:
+        try:
+            await handle.websocket.close()
+        finally:
+            if handle.close_session:
+                await handle.session.close()
+
+    def _websocket_handle(
+        self, params: dict[str, Any]
+    ) -> tuple[str, _WebSocketHandle]:
+        websocket_id = self._required_string(params, "websocket_id")
+        handle = self._websockets.get(websocket_id)
+        if handle is None:
+            raise EngineError("unknown_websocket", "Unknown WebSocket ID")
+        return websocket_id, handle
 
     async def _request_execute(self, params: dict[str, Any]) -> dict[str, Any]:
         session, should_close, default_profile = self._select_session(params)
@@ -421,7 +605,7 @@ class CurlEngine:
             "body_encoding": body_encoding,
         }
 
-    def _network_error(self, error: RequestsError) -> EngineError:
+    def _network_error(self, error: RequestsError | WebSocketError) -> EngineError:
         if error.code == CurlECode.OPERATION_TIMEDOUT:
             return EngineError("timeout", "Request timed out", retryable=True)
         return EngineError(
@@ -444,6 +628,18 @@ class CurlEngine:
         if not isinstance(value, str) or not value:
             raise EngineError("invalid_params", f"{key} must be a non-empty string")
         return value
+
+    @staticmethod
+    def _optional_timeout(value: Any) -> float | None:
+        if value is None:
+            return None
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or value < 0
+        ):
+            raise EngineError("invalid_params", "timeout must be a non-negative number")
+        return float(value)
 
     @staticmethod
     def _nonnegative_int(value: Any, name: str) -> int:

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "name": "curl_cffi",
+  "version": "0.15.0",
+  "repository": "https://github.com/lexiforest/curl_cffi",
+  "tag": "v0.15.0",
+  "commit": "0e219c43701f955436ef4a20486a7237a417dbc6",
+  "archive": "https://github.com/lexiforest/curl_cffi/archive/refs/tags/v0.15.0.tar.gz",
+  "archive_sha256": "1181c861432317dbe7cb85a4de6058cb6f04e08a04b486f290371f31d71be254",
+  "python_requirement": "curl-cffi==0.15.0",
+  "bundled_libcurl_version": "8.15.0-IMPERSONATE"
+}

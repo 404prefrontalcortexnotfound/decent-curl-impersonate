@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "name": "curl-impersonate",
+  "version": "1.5.2",
+  "repository": "https://github.com/lexiforest/curl-impersonate",
+  "tag": "v1.5.2",
+  "commit": "9607b22ccf6c440e560c5f8ad5292b8044bb6dd7",
+  "archive": "https://github.com/lexiforest/curl-impersonate/archive/refs/tags/v1.5.2.tar.gz",
+  "archive_sha256": "0a4ec0d73c025c0aeb61800e1a5864de805cc7f9b116b70b65a865a0e3c30204",
+  "locked_by": "curl_cffi v0.15.0 Makefile",
+  "curl_version": "8.15.0"
+}

@@ -30,6 +30,7 @@ const STABLE_WORKER_ERROR_CODES = new Set([
   "timeout",
   "unknown_operation",
   "unknown_session",
+  "unknown_websocket",
   "worker_error",
 ]);
 
