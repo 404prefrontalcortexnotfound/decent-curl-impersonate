@@ -1,7 +1,8 @@
 .worktrees/
 .venv/
 node_modules/
-dist/
+dist/*
+!dist/index.js
 __pycache__/
 .pytest_cache/
 *.pyc
