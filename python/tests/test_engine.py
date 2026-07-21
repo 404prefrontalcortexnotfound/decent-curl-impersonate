@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TypeVar
 
 import pytest
+from curl_cffi import CurlHttpVersion
 
 from decent_curl_impersonate.engine import CurlEngine, EngineError
 
@@ -87,6 +88,60 @@ def test_post_body_modes(
     assert echoed["body"] == expected_body
     if content_type:
         assert echoed["headers"]["content-type"].startswith(content_type)
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+def test_put_and_delete_methods(http_server: str, method: str) -> None:
+    result = run(
+        one(
+            "request.execute",
+            {"method": method, "url": f"{http_server}/echo", "content": "payload"},
+        )
+    )
+
+    echoed = json.loads(result["body"])
+    assert echoed["method"] == method
+    assert echoed["body"] == "payload"
+
+
+@pytest.mark.parametrize(
+    ("selector", "expected"),
+    [
+        ("auto", CurlHttpVersion.NONE),
+        ("1.1", CurlHttpVersion.V1_1),
+        ("2", CurlHttpVersion.V2_0),
+        ("3", CurlHttpVersion.V3),
+    ],
+)
+def test_http_version_selectors_map_to_curl_constants_without_live_http3(
+    monkeypatch: pytest.MonkeyPatch,
+    selector: str,
+    expected: CurlHttpVersion,
+) -> None:
+    class RequestRecorded(Exception):
+        pass
+
+    class RecordingSession:
+        request_kwargs: dict = {}
+
+        async def request(self, **kwargs: object) -> None:
+            RecordingSession.request_kwargs = kwargs
+            raise RequestRecorded
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("decent_curl_impersonate.engine.AsyncSession", RecordingSession)
+
+    with pytest.raises(RequestRecorded):
+        run(
+            one(
+                "request.execute",
+                {"url": "https://example.test/", "http_version": selector},
+            )
+        )
+
+    assert RecordingSession.request_kwargs["http_version"] == expected
 
 
 def test_multipart_upload_uses_local_file(http_server: str, secure_tmp_path: Path) -> None:

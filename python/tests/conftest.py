@@ -56,6 +56,9 @@ class FixtureHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/slow":
             time.sleep(0.2)
             self._send(200, b"late", "text/plain")
+        elif parsed.path == "/very-slow":
+            time.sleep(2)
+            self._send(200, b"too late", "text/plain")
         elif parsed.path == "/cookie/set":
             self._send(
                 200,
