@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "decent-curl-impersonate"
+version = "0.1.0"
+description = "Python worker for the decent-curl-impersonate Pi package"
+requires-python = ">=3.13,<3.15"
+dependencies = [
+  "curl-cffi==0.15.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4,<10",
+  "websockets>=15,<17",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["python/decent_curl_impersonate"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
