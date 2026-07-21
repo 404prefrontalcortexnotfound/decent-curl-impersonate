@@ -6,7 +6,7 @@ const SensitiveHeaders = Type.Record(Type.String(), Type.String(), {
 });
 
 const Query = Type.Record(Type.String(), Type.Unknown(), {
-  description: "URL query parameters.",
+  description: "URL query values may contain sensitive API keys or tokens and are not returned in Pi metadata.",
 });
 
 const Authentication = Type.Union([

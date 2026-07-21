@@ -116,6 +116,13 @@ describe("Pi tool schemas", () => {
     }
   });
 
+  test("warns that query values are sensitive and omitted from Pi metadata", () => {
+    const queryDescription = (DownloadParameters as any).properties.query.description;
+    expect(queryDescription).toBe(
+      "URL query values may contain sensitive API keys or tokens and are not returned in Pi metadata.",
+    );
+  });
+
   test("uses finite string enums for every action", () => {
     for (const schema of [SessionParameters, WebSocketParameters, ProfilesParameters]) {
       const action = (schema as any).properties.action;
