@@ -97,13 +97,69 @@ def test_smoke_is_manual_exact_head_and_always_cleans_up() -> None:
         assert check_name in text
 
 
+def test_smoke_state_records_explicit_creation_ownership() -> None:
+    text = workflow_text(SMOKE)
+
+    for field in (
+        "base_sha: null",
+        "intended_head_sha: null",
+        "branch_created: false",
+        "pr_created: false",
+    ):
+        assert field in text
+    state_sha_update = text.index(
+        ".base_sha = $base_sha | .intended_head_sha = $intended_head_sha"
+    )
+    ref_creation = text.index('gh api --method POST "repos/${REPOSITORY}/git/refs"')
+    branch_flag = text.index(".branch_created = true")
+    pr_creation = text.index('gh api --method POST "repos/${REPOSITORY}/pulls"')
+    pr_flag = text.index(".pr_number = $pr_number | .pr_created = true")
+    assert state_sha_update < ref_creation < branch_flag < pr_creation < pr_flag
+    assert "branch_created == true" in text
+    assert "pr_created == true" in text
+    assert "matching_prs" not in text
+
+
+def test_smoke_cleanup_proves_exact_ownership_before_mutation() -> None:
+    text = workflow_text(SMOKE)
+
+    for guard in (
+        '.base.repo.full_name == $repository',
+        '.base.sha == $base_sha',
+        '.base.ref == "main"',
+        '.head.repo.full_name == $repository',
+        '.head.ref == $branch',
+        '.head.sha == $head_sha',
+        '.merged == false',
+        '.merged_at == null',
+        '.[0].filename == "uv.lock"',
+        '.[0].additions == 1',
+        '.[0].deletions == 0',
+        "contents/uv.lock?ref=${base_sha}",
+        "contents/uv.lock?ref=${head_sha}",
+        "printf '# updater-ci-dispatch-smoke: %s\\n'",
+        "cmp --silent",
+        '.object.sha == $head_sha',
+    ):
+        assert guard in text
+
+    proof_end = text.index("Smoke cleanup ownership proof succeeded.")
+    proof_prefix = text[:proof_end]
+    assert "--method PATCH" not in proof_prefix
+    assert "--method DELETE" not in proof_prefix
+    assert text.index("--method PATCH", proof_end) > proof_end
+    assert text.index("--method DELETE", proof_end) > proof_end
+
+
 def test_smoke_live_discovery_is_fully_paginated_and_flattened() -> None:
     text = workflow_text(SMOKE)
 
     for endpoint_key in (
         "actions/workflows/ci.yml/runs",
+        "actions/runs/${ci_run_id}/jobs",
         "commits/${head_sha}/check-runs",
         "rules/branches/main",
+        "pulls/${pr_number}/files",
     ):
         endpoint_at = text.index(endpoint_key)
         command_start = text.rfind("gh api", 0, endpoint_at)
@@ -113,10 +169,13 @@ def test_smoke_live_discovery_is_fully_paginated_and_flattened() -> None:
         assert "--slurp" in command
 
     assert "map(.workflow_runs) | add" in text
+    assert "map(.jobs) | add" in text
     assert "map(.check_runs) | add" in text
     assert "map(select(type == \"array\")) | add" in text
-    assert text.count('length > 0') >= 3
+    assert "jq 'add' <<<\"${files_pages}\"" in text
+    assert text.count('length > 0') >= 4
     assert '.workflow_runs | type == "array"' in text
+    assert '.jobs | type == "array"' in text
     assert '.check_runs | type == "array"' in text
     assert "type == \"array\"" in text
 
@@ -160,12 +219,46 @@ def test_independent_janitor_is_guarded_and_deterministic() -> None:
         '"${head_branch}" == "main"',
     ):
         assert guard in text
-    assert "--paginate" in text
-    assert "--slurp" in text
+    for ownership_guard in (
+        'base_sha="$(jq -r \'.head_sha\' <<<"${run_json}")"',
+        '[[ "${base_sha}" =~ ^[0-9a-f]{40}$ ]]',
+        '.object.sha == $head_sha',
+        '.parents | length == 1',
+        '.parents[0].sha == $base_sha',
+        '.message == "Prove exact-head updater CI dispatch"',
+        'compare/${base_sha}...${head_sha}',
+        '.files | length == 1',
+        '.files[0].filename == "uv.lock"',
+        '.files[0].additions == 1',
+        '.files[0].deletions == 0',
+        "cmp --silent",
+        '.head.sha == $head_sha',
+        '.merged == false',
+        '.merged_at == null',
+    ):
+        assert ownership_guard in text
+
+    pulls_endpoint = '"repos/${EXPECTED_REPOSITORY}/pulls"'
+    pulls_positions = [
+        match.start() for match in re.finditer(re.escape(pulls_endpoint), text)
+    ]
+    assert len(pulls_positions) == 3
+    for endpoint_at in pulls_positions:
+        command_start = text.rfind("gh api", 0, endpoint_at)
+        command_end = text.find(")", endpoint_at)
+        command = text[command_start:command_end]
+        assert "--paginate" in command
+        assert "--slurp" in command
+        assert "per_page=100" in command
+
     assert "matching_count" in text
-    assert "merged_at" in text
-    assert "merged" in text
-    assert "--method DELETE" in text
+    assert "Smoke janitor ownership proof succeeded." in text
+    proof_end = text.index("Smoke janitor ownership proof succeeded.")
+    proof_prefix = text[:proof_end]
+    assert "--method PATCH" not in proof_prefix
+    assert "--method DELETE" not in proof_prefix
+    assert text.index("--method PATCH", proof_end) > proof_end
+    assert text.index("--method DELETE", proof_end) > proof_end
     assert "still exists" in text
     assert "actions/checkout" not in text
 

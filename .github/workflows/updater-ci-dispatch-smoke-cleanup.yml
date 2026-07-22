@@ -55,7 +55,7 @@ jobs:
       MANUAL_RUN_ID: ${{ inputs.smoke_run_id }}
       MANUAL_RUN_ATTEMPT: ${{ inputs.smoke_run_attempt }}
     steps:
-      - name: Validate completed smoke run and clean its deterministic branch
+      - name: Validate completed smoke run and prove ownership before cleanup
         shell: bash
         run: |
           set -euo pipefail
@@ -100,12 +100,80 @@ jobs:
           [[ "$(jq -r '.repository.full_name' <<<"${run_json}")" == "${EXPECTED_REPOSITORY}" ]]
           [[ "$(jq -r '.head_repository.full_name' <<<"${run_json}")" == "${EXPECTED_REPOSITORY}" ]]
 
+          base_sha="$(jq -r '.head_sha' <<<"${run_json}")"
+          [[ "${base_sha}" =~ ^[0-9a-f]{40}$ ]]
+          gate_id="smoke-${run_id}-${run_attempt}"
           branch_name="automation/token-pr-smoke-${run_id}-${run_attempt}"
+
+          ref_error="${RUNNER_TEMP}/smoke-cleanup-ref-error"
+          if ! ref_json="$(gh api "repos/${EXPECTED_REPOSITORY}/git/ref/heads/${branch_name}" \
+            2>"${ref_error}")"; then
+            if ! grep -q 'HTTP 404' "${ref_error}"; then
+              cat "${ref_error}" >&2
+              exit 1
+            fi
+
+            open_pages="$(gh api --paginate --slurp --method GET \
+              "repos/${EXPECTED_REPOSITORY}/pulls" \
+              -f state=open \
+              -f head="404prefrontalcortexnotfound:${branch_name}" \
+              -f per_page=100)"
+            jq -e 'type == "array" and length > 0 and all(.[]; type == "array")' \
+              <<<"${open_pages}" > /dev/null
+            [[ "$(jq 'add | length' <<<"${open_pages}")" -eq 0 ]]
+            printf 'Branch is absent and no matching open PR exists for run %s attempt %s.\n' \
+              "${run_id}" "${run_attempt}"
+            exit 0
+          fi
+
+          head_sha="$(jq -r '.object.sha' <<<"${ref_json}")"
+          [[ "${head_sha}" =~ ^[0-9a-f]{40}$ ]]
+          jq -e --arg head_sha "${head_sha}" '
+            type == "object" and .object.type == "commit" and .object.sha == $head_sha
+          ' <<<"${ref_json}" > /dev/null
+
+          commit_json="$(gh api "repos/${EXPECTED_REPOSITORY}/git/commits/${head_sha}")"
+          jq -e --arg base_sha "${base_sha}" --arg head_sha "${head_sha}" '
+            type == "object" and
+            .sha == $head_sha and
+            (.parents | length == 1) and
+            .parents[0].sha == $base_sha and
+            .message == "Prove exact-head updater CI dispatch"
+          ' <<<"${commit_json}" > /dev/null
+
+          compare_json="$(gh api "repos/${EXPECTED_REPOSITORY}/compare/${base_sha}...${head_sha}")"
+          jq -e --arg base_sha "${base_sha}" --arg head_sha "${head_sha}" '
+            type == "object" and
+            .status == "ahead" and
+            .ahead_by == 1 and
+            .behind_by == 0 and
+            .total_commits == 1 and
+            .base_commit.sha == $base_sha and
+            .merge_base_commit.sha == $base_sha and
+            (.commits | length == 1) and
+            .commits[0].sha == $head_sha and
+            (.files | length == 1) and
+            .files[0].filename == "uv.lock" and
+            .files[0].status == "modified" and
+            .files[0].additions == 1 and
+            .files[0].deletions == 0
+          ' <<<"${compare_json}" > /dev/null
+
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "${tmp_dir}"' EXIT
+          gh api -H 'Accept: application/vnd.github.raw+json' \
+            "repos/${EXPECTED_REPOSITORY}/contents/uv.lock?ref=${base_sha}" > "${tmp_dir}/base"
+          gh api -H 'Accept: application/vnd.github.raw+json' \
+            "repos/${EXPECTED_REPOSITORY}/contents/uv.lock?ref=${head_sha}" > "${tmp_dir}/head"
+          [[ -s "${tmp_dir}/base" ]]
+          cp "${tmp_dir}/base" "${tmp_dir}/expected"
+          printf '# updater-ci-dispatch-smoke: %s\n' "${gate_id}" >> "${tmp_dir}/expected"
+          cmp --silent "${tmp_dir}/expected" "${tmp_dir}/head"
+
           pulls_pages="$(gh api --paginate --slurp --method GET \
             "repos/${EXPECTED_REPOSITORY}/pulls" \
             -f state=all \
             -f head="404prefrontalcortexnotfound:${branch_name}" \
-            -f base=main \
             -f per_page=100)"
           jq -e 'type == "array" and length > 0 and all(.[]; type == "array")' \
             <<<"${pulls_pages}" > /dev/null
@@ -117,39 +185,44 @@ jobs:
             exit 1
           fi
 
+          pr_number=""
           if [[ "${matching_count}" -eq 1 ]]; then
             pr_number="$(jq -r '.[0].number' <<<"${matching_prs}")"
             [[ "${pr_number}" =~ ^[1-9][0-9]*$ ]]
             pr_json="$(gh api "repos/${EXPECTED_REPOSITORY}/pulls/${pr_number}")"
-            jq -e --arg repository "${EXPECTED_REPOSITORY}" --arg branch "${branch_name}" '
+            jq -e --arg repository "${EXPECTED_REPOSITORY}" --arg branch "${branch_name}" \
+              --arg base_sha "${base_sha}" --arg head_sha "${head_sha}" '
               type == "object" and
               .base.repo.full_name == $repository and
               .base.ref == "main" and
+              .base.sha == $base_sha and
               .head.repo.full_name == $repository and
               .head.ref == $branch and
+              .head.sha == $head_sha and
               .merged == false and
               .merged_at == null and
               (.state == "open" or .state == "closed")
             ' <<<"${pr_json}" > /dev/null
+          fi
 
-            if [[ "$(jq -r '.state' <<<"${pr_json}")" == "open" ]]; then
-              gh api --method PATCH "repos/${EXPECTED_REPOSITORY}/pulls/${pr_number}" \
-                -f state=closed > /dev/null
-            fi
+          echo 'Smoke janitor ownership proof succeeded.'
+
+          if [[ -n "${pr_number}" && "$(jq -r '.state' <<<"${pr_json}")" == "open" ]]; then
+            gh api --method PATCH "repos/${EXPECTED_REPOSITORY}/pulls/${pr_number}" \
+              -f state=closed > /dev/null
             final_pr="$(gh api "repos/${EXPECTED_REPOSITORY}/pulls/${pr_number}")"
-            jq -e '.state == "closed" and .merged == false and .merged_at == null' \
-              <<<"${final_pr}" > /dev/null
+            jq -e --arg head_sha "${head_sha}" '
+              .state == "closed" and .head.sha == $head_sha and
+              .merged == false and .merged_at == null
+            ' <<<"${final_pr}" > /dev/null
           fi
 
-          ref_error="${RUNNER_TEMP}/smoke-cleanup-ref-error"
-          if gh api "repos/${EXPECTED_REPOSITORY}/git/ref/heads/${branch_name}" \
-            > /dev/null 2>"${ref_error}"; then
-            gh api --method DELETE \
-              "repos/${EXPECTED_REPOSITORY}/git/refs/heads/${branch_name}" > /dev/null
-          elif ! grep -q 'HTTP 404' "${ref_error}"; then
-            cat "${ref_error}" >&2
-            exit 1
-          fi
+          current_ref="$(gh api "repos/${EXPECTED_REPOSITORY}/git/ref/heads/${branch_name}")"
+          jq -e --arg head_sha "${head_sha}" \
+            '.object.type == "commit" and .object.sha == $head_sha' \
+            <<<"${current_ref}" > /dev/null
+          gh api --method DELETE \
+            "repos/${EXPECTED_REPOSITORY}/git/refs/heads/${branch_name}" > /dev/null
 
           if gh api "repos/${EXPECTED_REPOSITORY}/git/ref/heads/${branch_name}" \
             > /dev/null 2>"${ref_error}"; then
@@ -164,7 +237,6 @@ jobs:
             "repos/${EXPECTED_REPOSITORY}/pulls" \
             -f state=open \
             -f head="404prefrontalcortexnotfound:${branch_name}" \
-            -f base=main \
             -f per_page=100)"
           jq -e 'type == "array" and length > 0 and all(.[]; type == "array")' \
             <<<"${open_pages}" > /dev/null
