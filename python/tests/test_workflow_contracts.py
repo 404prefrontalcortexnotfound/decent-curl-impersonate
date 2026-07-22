@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CI = ROOT / ".github/workflows/ci.yml"
 SMOKE = ROOT / ".github/workflows/updater-ci-dispatch-smoke.yml"
 JANITOR = ROOT / ".github/workflows/updater-ci-dispatch-smoke-cleanup.yml"
+README = ROOT / "README.md"
 
 
 def workflow_text(path: Path) -> str:
@@ -158,7 +159,6 @@ def test_smoke_live_discovery_is_fully_paginated_and_flattened() -> None:
         "actions/workflows/ci.yml/runs",
         "actions/runs/${ci_run_id}/jobs",
         "commits/${head_sha}/check-runs",
-        "rules/branches/main",
         "pulls/${pr_number}/files",
     ):
         endpoint_at = text.index(endpoint_key)
@@ -171,7 +171,6 @@ def test_smoke_live_discovery_is_fully_paginated_and_flattened() -> None:
     assert "map(.workflow_runs) | add" in text
     assert "map(.jobs) | add" in text
     assert "map(.check_runs) | add" in text
-    assert "map(select(type == \"array\")) | add" in text
     assert "jq 'add' <<<\"${files_pages}\"" in text
     assert text.count('length > 0') >= 4
     assert '.workflow_runs | type == "array"' in text
@@ -180,14 +179,31 @@ def test_smoke_live_discovery_is_fully_paginated_and_flattened() -> None:
     assert "type == \"array\"" in text
 
 
-def test_smoke_fails_closed_unless_all_exact_checks_are_effectively_required() -> None:
+def test_smoke_avoids_admin_endpoints_and_requires_exact_dispatched_checks() -> None:
     text = workflow_text(SMOKE)
 
-    assert "rules/branches/main" in text
-    assert "branches/main/protection/required_status_checks" in text
-    assert "Effective main protection requires all three exact dispatched check names." in text
-    assert "No effective branch rules" not in text
-    assert "No required status checks" not in text
+    for forbidden_endpoint in (
+        "rules/branches",
+        "branches/main/protection",
+    ):
+        assert forbidden_endpoint not in text
+
+    assert '--arg run_path "/actions/runs/${ci_run_id}/"' in text
+    assert '.details_url | contains($run_path)' in text
+    assert '.app.slug == "github-actions"' in text
+    assert '[[ "${job_count}" -eq 1 ]]' in text
+    assert '[[ "${check_count}" -eq 1 ]]' in text
+    for check_name in ("Test (ubuntu-24.04)", "Test (macos-14)", "Updater policy"):
+        assert check_name in text
+
+
+def test_readme_documents_smoke_and_ruleset_trust_boundary() -> None:
+    text = workflow_text(README)
+
+    assert "exact pull-request head" in text
+    assert "authenticated maintainer/admin" in text
+    assert 'gh api --paginate --slurp "repos/${repository}/rules/branches/main?per_page=100"' in text
+    assert "jq -e" in text
     for check_name in ("Test (ubuntu-24.04)", "Test (macos-14)", "Updater policy"):
         assert check_name in text
 

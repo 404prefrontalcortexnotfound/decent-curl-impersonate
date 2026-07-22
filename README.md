@@ -126,13 +126,31 @@ The network fingerprint test is intentionally opt-in:
 DECENT_CURL_LIVE_TESTS=1 bun test test/live-fingerprint.test.ts
 ```
 
-Maintainers can manually prove that an explicitly dispatched CI run both attaches the required checks to an exact pull-request head and is enforced by `main` protection after the smoke workflow is present on `main`:
+Maintainers can run the smoke after its workflow is present on `main` to prove that an explicitly dispatched CI run attaches all three successful checks to the exact pull-request head:
 
 ```sh
 gh workflow run updater-ci-dispatch-smoke.yml --ref main -f confirm=true
 ```
 
-The smoke uses only `GITHUB_TOKEN`, creates a uniquely named same-repository branch and disposable pull request containing one exact `uv.lock` marker line, and always attempts to close the pull request without merging and delete the branch. A separate default-branch janitor runs when the smoke completes, including after cancellation or timeout, and independently verifies the completed run before closing the deterministic disposable PR and deleting only its deterministic branch. Maintainers can recover cleanup manually with `gh workflow run updater-ci-dispatch-smoke-cleanup.yml --ref main -f smoke_run_id=<id> -f smoke_run_attempt=<attempt>`. The smoke fails unless all three exact CI contexts are effectively required on `main`; configure protection and allow GitHub Actions to create and approve pull requests before running it. Neither workflow approves, merges, tags, publishes, releases, checks out pull-request code, or invokes an AI service.
+The smoke uses only `GITHUB_TOKEN`, creates a uniquely named same-repository branch and disposable pull request containing one exact `uv.lock` marker line, and always attempts to close the pull request without merging and delete the branch. A separate default-branch janitor runs when the smoke completes, including after cancellation or timeout, and independently verifies the completed run before closing the deterministic disposable PR and deleting only its deterministic branch. Maintainers can recover cleanup manually with `gh workflow run updater-ci-dispatch-smoke-cleanup.yml --ref main -f smoke_run_id=<id> -f smoke_run_attempt=<attempt>`. Neither workflow approves, merges, tags, publishes, releases, checks out pull-request code, or invokes an AI service.
+
+Repository rules are a separate trust boundary: `GITHUB_TOKEN` cannot read repository-administration rules, so the smoke does not verify which checks `main` requires. Using an authenticated maintainer/admin `gh` session, separately verify that the effective rules include the three exact context strings:
+
+```sh
+repository=404prefrontalcortexnotfound/decent-curl-impersonate
+expected='["Test (ubuntu-24.04)","Test (macos-14)","Updater policy"]'
+gh api --paginate --slurp "repos/${repository}/rules/branches/main?per_page=100" \
+  | jq -e --argjson expected "${expected}" '
+      [ .[][]
+        | select(.type == "required_status_checks")
+        | .parameters.required_status_checks[]?.context
+      ]
+      | unique as $configured
+      | ($expected - $configured | length) == 0
+    '
+```
+
+A successful query prints `true`; failure or missing contexts returns a nonzero status. Configure the active ruleset and allow GitHub Actions to create and approve pull requests before running the smoke.
 
 ## Attribution
 
