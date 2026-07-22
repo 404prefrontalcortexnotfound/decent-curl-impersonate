@@ -1,4 +1,5 @@
 name: CI
+run-name: "CI gate=${{ inputs.gate_id || 'ordinary' }} pr=${{ inputs.pr_number || 'none' }} sha=${{ inputs.expected_head_sha || github.sha }} mode=${{ inputs.validation_mode || 'ordinary' }}"
 
 on:
   push:
@@ -6,28 +7,128 @@ on:
       - main
   pull_request:
   workflow_call:
+  workflow_dispatch:
+    inputs:
+      gate_id:
+        description: Unique smoke validation gate identifier
+        required: true
+        type: string
+      pr_number:
+        description: Open same-repository pull request number
+        required: true
+        type: string
+      expected_head_sha:
+        description: Exact 40-hex pull request head commit
+        required: true
+        type: string
+      validation_mode:
+        description: Dispatched validation policy
+        required: true
+        type: choice
+        options:
+          - smoke
 
 permissions:
   contents: read
 
 jobs:
+  updater-policy:
+    name: Updater policy
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Classify and enforce updater dispatch
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          ACTUAL_REPOSITORY: ${{ github.repository }}
+          EVENT_REPOSITORY: ${{ github.event.repository.full_name }}
+          GATE_ID: ${{ inputs.gate_id }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          VALIDATION_MODE: ${{ inputs.validation_mode }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          readonly EXPECTED_REPOSITORY="404prefrontalcortexnotfound/decent-curl-impersonate"
+          readonly EXPECTED_SHA="${GITHUB_SHA}"
+
+          if [[ "${EVENT_NAME}" != "workflow_dispatch" ]]; then
+            printf 'Non-dispatch event %s: smoke dispatch policy is not applicable.\n' "${EVENT_NAME}"
+            exit 0
+          fi
+
+          [[ "${ACTUAL_REPOSITORY}" == "${EXPECTED_REPOSITORY}" ]]
+          [[ "${EVENT_REPOSITORY}" == "${EXPECTED_REPOSITORY}" ]]
+          [[ "${GATE_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]]
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${EXPECTED_HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EXPECTED_HEAD_SHA}" == "${EXPECTED_SHA}" ]]
+          [[ "${VALIDATION_MODE}" == "smoke" ]]
+
+          pr_json="$(gh api "repos/${EXPECTED_REPOSITORY}/pulls/${PR_NUMBER}")"
+          [[ "$(jq -r '.state' <<<"${pr_json}")" == "open" ]]
+          [[ "$(jq -r '.base.repo.full_name' <<<"${pr_json}")" == "${EXPECTED_REPOSITORY}" ]]
+          [[ "$(jq -r '.base.ref' <<<"${pr_json}")" == "main" ]]
+          [[ "$(jq -r '.head.repo.full_name' <<<"${pr_json}")" == "${EXPECTED_REPOSITORY}" ]]
+          [[ "$(jq -r '.head.sha' <<<"${pr_json}")" == "${EXPECTED_HEAD_SHA}" ]]
+
+          head_ref="$(jq -r '.head.ref' <<<"${pr_json}")"
+          [[ "${head_ref}" == "automation/token-pr-${GATE_ID}" ]]
+
+          changed_count="$(jq -r '.changed_files' <<<"${pr_json}")"
+          [[ "${changed_count}" -eq 1 ]]
+          files_pages="$(gh api --paginate "repos/${EXPECTED_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" --slurp)"
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "array")' \
+            <<<"${files_pages}" > /dev/null
+          files_json="$(jq 'add' <<<"${files_pages}")"
+          [[ "$(jq 'length' <<<"${files_json}")" -eq "${changed_count}" ]]
+          [[ "$(jq -r '.[0].filename' <<<"${files_json}")" == "uv.lock" ]]
+          [[ "$(jq -r '.[0].status' <<<"${files_json}")" == "modified" ]]
+          [[ "$(jq -r '.[0].additions' <<<"${files_json}")" -eq 1 ]]
+          [[ "$(jq -r '.[0].deletions' <<<"${files_json}")" -eq 0 ]]
+
+          base_sha="$(jq -r '.base.sha' <<<"${pr_json}")"
+          [[ "${base_sha}" =~ ^[0-9a-f]{40}$ ]]
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "${tmp_dir}"' EXIT
+          gh api -H 'Accept: application/vnd.github.raw+json' \
+            "repos/${EXPECTED_REPOSITORY}/contents/uv.lock?ref=${base_sha}" > "${tmp_dir}/base"
+          gh api -H 'Accept: application/vnd.github.raw+json' \
+            "repos/${EXPECTED_REPOSITORY}/contents/uv.lock?ref=${EXPECTED_HEAD_SHA}" > "${tmp_dir}/head"
+          [[ -s "${tmp_dir}/base" ]]
+          cp "${tmp_dir}/base" "${tmp_dir}/expected"
+          printf '# updater-ci-dispatch-smoke: %s\n' "${GATE_ID}" >> "${tmp_dir}/expected"
+          cmp --silent "${tmp_dir}/expected" "${tmp_dir}/head"
+
+          printf 'Updater policy accepted gate %s for PR %s at %s.\n' \
+            "${GATE_ID}" "${PR_NUMBER}" "${EXPECTED_HEAD_SHA}"
+
   test:
     name: Test (${{ matrix.os }})
+    needs: updater-policy
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-14]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # actions/setup-node v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
           cache: npm
-      - uses: oven-sh/setup-bun@v2
+      # oven-sh/setup-bun v2.2.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: 1.3.14
-      - uses: astral-sh/setup-uv@v7
+      # astral-sh/setup-uv v7.6.0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         with:
           version: 0.11.17
           python-version: "3.13"
