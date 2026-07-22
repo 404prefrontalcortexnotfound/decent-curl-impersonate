@@ -223,18 +223,27 @@ def test_independent_janitor_is_guarded_and_deterministic() -> None:
     assert "contents: write" in text
     assert "pull-requests: write" in text
     assert "actions: read" in text
+    assert "github.event.workflow_run.path == '.github/workflows/updater-ci-dispatch-smoke.yml'" in text
+    assert "github.event.workflow_run.event == 'workflow_dispatch'" in text
+    assert "github.event.workflow_run.status == 'completed'" in text
     assert "github.event.workflow_run.head_branch == 'main'" in text
     assert "github.event.workflow_run.head_repository.full_name == github.repository" in text
+    assert "github.event.workflow_run.name ==" not in text
+    assert "AUTO_WORKFLOW_NAME" not in text
     assert 'branch_name="automation/token-pr-smoke-${run_id}-${run_attempt}"' in text
     for guard in (
         'EXPECTED_REPOSITORY="404prefrontalcortexnotfound/decent-curl-impersonate"',
-        'EXPECTED_WORKFLOW="Updater CI dispatch smoke"',
         'EXPECTED_WORKFLOW_PATH=".github/workflows/updater-ci-dispatch-smoke.yml"',
+        'actions/workflows/updater-ci-dispatch-smoke.yml',
+        "'.workflow_id'",
+        '"${run_workflow_id}" == "${expected_workflow_id}"',
         '"${run_event}" == "workflow_dispatch"',
         '"${run_status}" == "completed"',
         '"${head_branch}" == "main"',
     ):
         assert guard in text
+    assert 'EXPECTED_WORKFLOW="' not in text
+    assert "jq -r '.name'" not in text
     for ownership_guard in (
         'base_sha="$(jq -r \'.head_sha\' <<<"${run_json}")"',
         '[[ "${base_sha}" =~ ^[0-9a-f]{40}$ ]]',
