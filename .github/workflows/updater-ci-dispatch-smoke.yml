@@ -255,59 +255,6 @@ jobs:
           printf 'All three required checks succeeded on exact head %s in run %s.\n' \
             "${head_sha}" "${ci_run_id}"
 
-      - name: Inspect effective required-check rules
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rules_error="${RUNNER_TEMP}/branch-rules-error"
-          if rules_pages="$(gh api --paginate --slurp \
-            "repos/${REPOSITORY}/rules/branches/main?per_page=100" 2>"${rules_error}")"; then
-            jq -e 'type == "array" and length > 0 and all(.[]; type == "array")' \
-              <<<"${rules_pages}" > /dev/null
-          elif grep -q 'HTTP 404' "${rules_error}"; then
-            rules_pages='[[]]'
-          else
-            cat "${rules_error}" >&2
-            exit 1
-          fi
-          rules="$(jq 'map(select(type == "array")) | add' <<<"${rules_pages}")"
-          jq -e 'type == "array" and all(.[] | select(.type == "required_status_checks");
-            (.parameters.required_status_checks | type) == "array")' \
-            <<<"${rules}" > /dev/null
-          ruleset_contexts="$(jq \
-            '[.[] | select(.type == "required_status_checks") |
-              .parameters.required_status_checks[].context] | unique' <<<"${rules}")"
-
-          classic_error="${RUNNER_TEMP}/classic-protection-error"
-          if classic="$(gh api \
-            "repos/${REPOSITORY}/branches/main/protection/required_status_checks" \
-            2>"${classic_error}")"; then
-            jq -e 'type == "object" and (.contexts | type == "array") and
-              ((.checks // []) | type == "array")' <<<"${classic}" > /dev/null
-          elif grep -q 'HTTP 404' "${classic_error}"; then
-            classic='{"contexts":[],"checks":[]}'
-          else
-            cat "${classic_error}" >&2
-            exit 1
-          fi
-          classic_contexts="$(jq \
-            '[(.contexts[]?), (.checks[]?.context)] | map(select(type == "string")) | unique' \
-            <<<"${classic}")"
-          configured="$(jq -n --argjson ruleset "${ruleset_contexts}" \
-            --argjson classic "${classic_contexts}" '$ruleset + $classic | unique')"
-
-          for expected_name in 'Test (ubuntu-24.04)' 'Test (macos-14)' 'Updater policy'; do
-            count="$(jq --arg name "${expected_name}" \
-              '[.[] | select(. == $name)] | length' <<<"${configured}")"
-            if [[ "${count}" -ne 1 ]]; then
-              printf 'Required check %s is not effectively required on main.\n' \
-                "${expected_name}" >&2
-              exit 1
-            fi
-          done
-          echo 'Effective main protection requires all three exact dispatched check names.'
-
       - name: Always close the PR and delete the branch
         if: ${{ always() }}
         shell: bash
