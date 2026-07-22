@@ -5,6 +5,7 @@ import re
 ROOT = Path(__file__).resolve().parents[2]
 CI = ROOT / ".github/workflows/ci.yml"
 SMOKE = ROOT / ".github/workflows/updater-ci-dispatch-smoke.yml"
+JANITOR = ROOT / ".github/workflows/updater-ci-dispatch-smoke-cleanup.yml"
 
 
 def workflow_text(path: Path) -> str:
@@ -34,7 +35,7 @@ def test_ci_preserves_baseline_checks_and_commands() -> None:
         assert command in text
 
 
-def test_ci_dispatch_is_exact_head_bound_and_fail_closed() -> None:
+def test_ci_dispatch_is_smoke_only_exact_head_bound_and_fail_closed() -> None:
     text = workflow_text(CI)
 
     for dispatch_input in ("gate_id:", "pr_number:", "expected_head_sha:", "validation_mode:"):
@@ -44,17 +45,27 @@ def test_ci_dispatch_is_exact_head_bound_and_fail_closed() -> None:
     assert "EXPECTED_HEAD_SHA" in text
     assert "GITHUB_SHA" in text
     assert "pulls/${PR_NUMBER}" in text
-    assert "automation/weekly-curl-cffi" in text
     assert "automation/token-pr-${GATE_ID}" in text
+    assert "options:\n          - smoke" in text
+    assert '[[ "${VALIDATION_MODE}" == "smoke" ]]' in text
 
-    for allowed_path in (
+    for future_stage_value in (
+        "- updater",
+        "automation/weekly-curl-cffi",
         "pyproject.toml",
-        "uv.lock",
         "upstream/curl_cffi.lock.json",
         "upstream/curl_impersonate.lock.json",
         "THIRD_PARTY_NOTICES.md",
+        "ALLOWED_PATHS",
     ):
-        assert allowed_path in text
+        assert future_stage_value not in text
+
+    assert '[[ "${changed_count}" -eq 1 ]]' in text
+    assert '.[0].filename' in text and '== "uv.lock"' in text
+    assert '.[0].status' in text and '== "modified"' in text
+    assert '.[0].additions' in text and '-eq 1' in text
+    assert '.[0].deletions' in text and '-eq 0' in text
+    assert "cmp --silent" in text
 
 
 def test_touched_ci_actions_are_immutable() -> None:
@@ -86,8 +97,81 @@ def test_smoke_is_manual_exact_head_and_always_cleans_up() -> None:
         assert check_name in text
 
 
-def test_smoke_has_no_high_risk_side_effects_or_mutable_actions() -> None:
+def test_smoke_live_discovery_is_fully_paginated_and_flattened() -> None:
     text = workflow_text(SMOKE)
+
+    for endpoint_key in (
+        "actions/workflows/ci.yml/runs",
+        "commits/${head_sha}/check-runs",
+        "rules/branches/main",
+    ):
+        endpoint_at = text.index(endpoint_key)
+        command_start = text.rfind("gh api", 0, endpoint_at)
+        command_end = text.find(")", endpoint_at)
+        command = text[command_start:command_end]
+        assert "--paginate" in command
+        assert "--slurp" in command
+
+    assert "map(.workflow_runs) | add" in text
+    assert "map(.check_runs) | add" in text
+    assert "map(select(type == \"array\")) | add" in text
+    assert text.count('length > 0') >= 3
+    assert '.workflow_runs | type == "array"' in text
+    assert '.check_runs | type == "array"' in text
+    assert "type == \"array\"" in text
+
+
+def test_smoke_fails_closed_unless_all_exact_checks_are_effectively_required() -> None:
+    text = workflow_text(SMOKE)
+
+    assert "rules/branches/main" in text
+    assert "branches/main/protection/required_status_checks" in text
+    assert "Effective main protection requires all three exact dispatched check names." in text
+    assert "No effective branch rules" not in text
+    assert "No required status checks" not in text
+    for check_name in ("Test (ubuntu-24.04)", "Test (macos-14)", "Updater policy"):
+        assert check_name in text
+
+
+def test_independent_janitor_is_guarded_and_deterministic() -> None:
+    text = workflow_text(JANITOR)
+    trigger_block = text.split("permissions:", 1)[0]
+
+    assert "workflow_run:" in trigger_block
+    assert 'workflows: ["Updater CI dispatch smoke"]' in trigger_block
+    assert "types: [completed]" in trigger_block
+    assert "workflow_dispatch:" in trigger_block
+    for forbidden_trigger in ("pull_request_target:", "pull_request:", "push:", "schedule:"):
+        assert forbidden_trigger not in trigger_block
+
+    assert "contents: read" in text
+    assert "contents: write" in text
+    assert "pull-requests: write" in text
+    assert "actions: read" in text
+    assert "github.event.workflow_run.head_branch == 'main'" in text
+    assert "github.event.workflow_run.head_repository.full_name == github.repository" in text
+    assert 'branch_name="automation/token-pr-smoke-${run_id}-${run_attempt}"' in text
+    for guard in (
+        'EXPECTED_REPOSITORY="404prefrontalcortexnotfound/decent-curl-impersonate"',
+        'EXPECTED_WORKFLOW="Updater CI dispatch smoke"',
+        'EXPECTED_WORKFLOW_PATH=".github/workflows/updater-ci-dispatch-smoke.yml"',
+        '"${run_event}" == "workflow_dispatch"',
+        '"${run_status}" == "completed"',
+        '"${head_branch}" == "main"',
+    ):
+        assert guard in text
+    assert "--paginate" in text
+    assert "--slurp" in text
+    assert "matching_count" in text
+    assert "merged_at" in text
+    assert "merged" in text
+    assert "--method DELETE" in text
+    assert "still exists" in text
+    assert "actions/checkout" not in text
+
+
+def test_smoke_has_no_high_risk_side_effects_or_mutable_actions() -> None:
+    text = workflow_text(SMOKE) + workflow_text(JANITOR)
 
     assert not re.search(r"^\s*- uses:\s*[^\s#]+@(?![0-9a-f]{40}(?:\s|$))", text, re.MULTILINE)
     for forbidden in (

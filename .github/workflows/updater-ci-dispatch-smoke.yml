@@ -141,8 +141,13 @@ jobs:
 
           ci_run_id=""
           for _ in $(seq 1 60); do
-            runs="$(gh api --method GET "repos/${REPOSITORY}/actions/workflows/ci.yml/runs" \
+            runs_pages="$(gh api --paginate --slurp --method GET \
+              "repos/${REPOSITORY}/actions/workflows/ci.yml/runs" \
               -f event=workflow_dispatch -f branch="${branch_name}" -f per_page=100)"
+            jq -e 'type == "array" and length > 0 and all(.[];
+              type == "object" and (.workflow_runs | type == "array"))' \
+              <<<"${runs_pages}" > /dev/null
+            runs="$(jq '{workflow_runs: (map(.workflow_runs) | add)}' <<<"${runs_pages}")"
             matches="$(jq --arg title "${expected_title}" --arg sha "${head_sha}" --arg branch "${branch_name}" \
               '[.workflow_runs[] | select(
                 .event == "workflow_dispatch" and
@@ -204,8 +209,19 @@ jobs:
           [[ "$(jq -r '.status' <<<"${run_json}")" == "completed" ]]
           [[ "$(jq -r '.conclusion' <<<"${run_json}")" == "success" ]]
 
-          jobs="$(gh api --paginate "repos/${REPOSITORY}/actions/runs/${ci_run_id}/jobs?per_page=100" --slurp | jq '{jobs: (map(.jobs) | add)}')"
-          checks="$(gh api "repos/${REPOSITORY}/commits/${head_sha}/check-runs?per_page=100")"
+          jobs_pages="$(gh api --paginate --slurp \
+            "repos/${REPOSITORY}/actions/runs/${ci_run_id}/jobs?per_page=100")"
+          jq -e 'type == "array" and length > 0 and all(.[];
+            type == "object" and (.jobs | type == "array"))' \
+            <<<"${jobs_pages}" > /dev/null
+          jobs="$(jq '{jobs: (map(.jobs) | add)}' <<<"${jobs_pages}")"
+
+          checks_pages="$(gh api --paginate --slurp \
+            "repos/${REPOSITORY}/commits/${head_sha}/check-runs?per_page=100")"
+          jq -e 'type == "array" and length > 0 and all(.[];
+            type == "object" and (.check_runs | type == "array"))' \
+            <<<"${checks_pages}" > /dev/null
+          checks="$(jq '{check_runs: (map(.check_runs) | add)}' <<<"${checks_pages}")"
           for expected_name in 'Test (ubuntu-24.04)' 'Test (macos-14)' 'Updater policy'; do
             job_count="$(jq --arg name "${expected_name}" \
               '[.jobs[] | select(.name == $name and .status == "completed" and .conclusion == "success")] | length' \
@@ -229,26 +245,54 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          error_file="${RUNNER_TEMP}/branch-rules-error"
-          if ! rules="$(gh api "repos/${REPOSITORY}/rules/branches/main" 2>"${error_file}")"; then
-            if grep -q 'HTTP 404' "${error_file}"; then
-              echo '::notice::No effective branch rules are configured for main; exact required-check recognition still needs live verification after rules are added.'
-              exit 0
-            fi
-            cat "${error_file}" >&2
+
+          rules_error="${RUNNER_TEMP}/branch-rules-error"
+          if rules_pages="$(gh api --paginate --slurp \
+            "repos/${REPOSITORY}/rules/branches/main?per_page=100" 2>"${rules_error}")"; then
+            jq -e 'type == "array" and length > 0 and all(.[]; type == "array")' \
+              <<<"${rules_pages}" > /dev/null
+          elif grep -q 'HTTP 404' "${rules_error}"; then
+            rules_pages='[[]]'
+          else
+            cat "${rules_error}" >&2
             exit 1
           fi
+          rules="$(jq 'map(select(type == "array")) | add' <<<"${rules_pages}")"
+          jq -e 'type == "array" and all(.[] | select(.type == "required_status_checks");
+            (.parameters.required_status_checks | type) == "array")' \
+            <<<"${rules}" > /dev/null
+          ruleset_contexts="$(jq \
+            '[.[] | select(.type == "required_status_checks") |
+              .parameters.required_status_checks[].context] | unique' <<<"${rules}")"
 
-          configured="$(jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context] | unique' <<<"${rules}")"
-          if [[ "$(jq 'length' <<<"${configured}")" -eq 0 ]]; then
-            echo '::notice::No required status checks are configured for main; exact required-check recognition still needs live verification after rules are added.'
-            exit 0
+          classic_error="${RUNNER_TEMP}/classic-protection-error"
+          if classic="$(gh api \
+            "repos/${REPOSITORY}/branches/main/protection/required_status_checks" \
+            2>"${classic_error}")"; then
+            jq -e 'type == "object" and (.contexts | type == "array") and
+              ((.checks // []) | type == "array")' <<<"${classic}" > /dev/null
+          elif grep -q 'HTTP 404' "${classic_error}"; then
+            classic='{"contexts":[],"checks":[]}'
+          else
+            cat "${classic_error}" >&2
+            exit 1
           fi
+          classic_contexts="$(jq \
+            '[(.contexts[]?), (.checks[]?.context)] | map(select(type == "string")) | unique' \
+            <<<"${classic}")"
+          configured="$(jq -n --argjson ruleset "${ruleset_contexts}" \
+            --argjson classic "${classic_contexts}" '$ruleset + $classic | unique')"
 
           for expected_name in 'Test (ubuntu-24.04)' 'Test (macos-14)' 'Updater policy'; do
-            [[ "$(jq --arg name "${expected_name}" '[.[] | select(. == $name)] | length' <<<"${configured}")" -eq 1 ]]
+            count="$(jq --arg name "${expected_name}" \
+              '[.[] | select(. == $name)] | length' <<<"${configured}")"
+            if [[ "${count}" -ne 1 ]]; then
+              printf 'Required check %s is not effectively required on main.\n' \
+                "${expected_name}" >&2
+              exit 1
+            fi
           done
-          echo 'Effective main rules require all three exact dispatched check names.'
+          echo 'Effective main protection requires all three exact dispatched check names.'
 
       - name: Always close the PR and delete the branch
         if: ${{ always() }}

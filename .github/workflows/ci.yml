@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       gate_id:
-        description: Unique updater validation gate identifier
+        description: Unique smoke validation gate identifier
         required: true
         type: string
       pr_number:
@@ -26,7 +26,6 @@ on:
         required: true
         type: choice
         options:
-          - updater
           - smoke
 
 permissions:
@@ -58,7 +57,7 @@ jobs:
           readonly EXPECTED_SHA="${GITHUB_SHA}"
 
           if [[ "${EVENT_NAME}" != "workflow_dispatch" ]]; then
-            printf 'Non-updater event %s: updater dispatch policy is not applicable.\n' "${EVENT_NAME}"
+            printf 'Non-dispatch event %s: smoke dispatch policy is not applicable.\n' "${EVENT_NAME}"
             exit 0
           fi
 
@@ -68,7 +67,7 @@ jobs:
           [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
           [[ "${EXPECTED_HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${EXPECTED_HEAD_SHA}" == "${EXPECTED_SHA}" ]]
-          [[ "${VALIDATION_MODE}" == "updater" || "${VALIDATION_MODE}" == "smoke" ]]
+          [[ "${VALIDATION_MODE}" == "smoke" ]]
 
           pr_json="$(gh api "repos/${EXPECTED_REPOSITORY}/pulls/${PR_NUMBER}")"
           [[ "$(jq -r '.state' <<<"${pr_json}")" == "open" ]]
@@ -78,57 +77,32 @@ jobs:
           [[ "$(jq -r '.head.sha' <<<"${pr_json}")" == "${EXPECTED_HEAD_SHA}" ]]
 
           head_ref="$(jq -r '.head.ref' <<<"${pr_json}")"
-          [[ -n "${head_ref}" && "${head_ref}" != "null" && "${head_ref}" != "main" ]]
-          if [[ "${VALIDATION_MODE}" == "updater" ]]; then
-            [[ "${head_ref}" == "automation/weekly-curl-cffi" ]]
-          else
-            [[ "${head_ref}" == "automation/token-pr-${GATE_ID}" ]]
-          fi
+          [[ "${head_ref}" == "automation/token-pr-${GATE_ID}" ]]
 
           changed_count="$(jq -r '.changed_files' <<<"${pr_json}")"
-          [[ "${changed_count}" =~ ^[1-9][0-9]*$ ]]
-          (( changed_count <= 5 ))
-          files_json="$(gh api --paginate "repos/${EXPECTED_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" --slurp | jq 'add')"
+          [[ "${changed_count}" -eq 1 ]]
+          files_pages="$(gh api --paginate "repos/${EXPECTED_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" --slurp)"
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "array")' \
+            <<<"${files_pages}" > /dev/null
+          files_json="$(jq 'add' <<<"${files_pages}")"
           [[ "$(jq 'length' <<<"${files_json}")" -eq "${changed_count}" ]]
+          [[ "$(jq -r '.[0].filename' <<<"${files_json}")" == "uv.lock" ]]
+          [[ "$(jq -r '.[0].status' <<<"${files_json}")" == "modified" ]]
+          [[ "$(jq -r '.[0].additions' <<<"${files_json}")" -eq 1 ]]
+          [[ "$(jq -r '.[0].deletions' <<<"${files_json}")" -eq 0 ]]
 
-          if [[ "${VALIDATION_MODE}" == "smoke" ]]; then
-            [[ "${changed_count}" -eq 1 ]]
-            [[ "$(jq -r '.[0].filename' <<<"${files_json}")" == "uv.lock" ]]
-            [[ "$(jq -r '.[0].status' <<<"${files_json}")" == "modified" ]]
-            [[ "$(jq -r '.[0].additions' <<<"${files_json}")" -eq 1 ]]
-            [[ "$(jq -r '.[0].deletions' <<<"${files_json}")" -eq 0 ]]
-
-            base_sha="$(jq -r '.base.sha' <<<"${pr_json}")"
-            tmp_dir="$(mktemp -d)"
-            trap 'rm -rf "${tmp_dir}"' EXIT
-            gh api -H 'Accept: application/vnd.github.raw+json' \
-              "repos/${EXPECTED_REPOSITORY}/contents/uv.lock?ref=${base_sha}" > "${tmp_dir}/base"
-            gh api -H 'Accept: application/vnd.github.raw+json' \
-              "repos/${EXPECTED_REPOSITORY}/contents/uv.lock?ref=${EXPECTED_HEAD_SHA}" > "${tmp_dir}/head"
-            [[ -s "${tmp_dir}/base" ]]
-            cp "${tmp_dir}/base" "${tmp_dir}/expected"
-            printf '# updater-ci-dispatch-smoke: %s\n' "${GATE_ID}" >> "${tmp_dir}/expected"
-            cmp --silent "${tmp_dir}/expected" "${tmp_dir}/head"
-          else
-            readonly -a ALLOWED_PATHS=(
-              "pyproject.toml"
-              "uv.lock"
-              "upstream/curl_cffi.lock.json"
-              "upstream/curl_impersonate.lock.json"
-              "THIRD_PARTY_NOTICES.md"
-            )
-            while IFS=$'\t' read -r filename status; do
-              [[ "${status}" == "modified" ]]
-              allowed=false
-              for allowed_path in "${ALLOWED_PATHS[@]}"; do
-                if [[ "${filename}" == "${allowed_path}" ]]; then
-                  allowed=true
-                  break
-                fi
-              done
-              [[ "${allowed}" == "true" ]]
-            done < <(jq -r '.[] | [.filename, .status] | @tsv' <<<"${files_json}")
-          fi
+          base_sha="$(jq -r '.base.sha' <<<"${pr_json}")"
+          [[ "${base_sha}" =~ ^[0-9a-f]{40}$ ]]
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "${tmp_dir}"' EXIT
+          gh api -H 'Accept: application/vnd.github.raw+json' \
+            "repos/${EXPECTED_REPOSITORY}/contents/uv.lock?ref=${base_sha}" > "${tmp_dir}/base"
+          gh api -H 'Accept: application/vnd.github.raw+json' \
+            "repos/${EXPECTED_REPOSITORY}/contents/uv.lock?ref=${EXPECTED_HEAD_SHA}" > "${tmp_dir}/head"
+          [[ -s "${tmp_dir}/base" ]]
+          cp "${tmp_dir}/base" "${tmp_dir}/expected"
+          printf '# updater-ci-dispatch-smoke: %s\n' "${GATE_ID}" >> "${tmp_dir}/expected"
+          cmp --silent "${tmp_dir}/expected" "${tmp_dir}/head"
 
           printf 'Updater policy accepted gate %s for PR %s at %s.\n' \
             "${GATE_ID}" "${PR_NUMBER}" "${EXPECTED_HEAD_SHA}"

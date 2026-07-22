@@ -1,0 +1,173 @@
+name: Updater CI dispatch smoke cleanup
+run-name: "Updater CI dispatch smoke cleanup ${{ github.event.workflow_run.id || inputs.smoke_run_id }}-${{ github.event.workflow_run.run_attempt || inputs.smoke_run_attempt }}"
+
+on:
+  workflow_run:
+    workflows: ["Updater CI dispatch smoke"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      smoke_run_id:
+        description: Completed smoke workflow run ID to recover
+        required: true
+        type: string
+      smoke_run_attempt:
+        description: Completed smoke workflow run attempt to recover
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  cleanup:
+    name: Close disposable PR and delete branch
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.action == 'completed' &&
+       github.event.workflow_run.name == 'Updater CI dispatch smoke' &&
+       github.event.workflow_run.path == '.github/workflows/updater-ci-dispatch-smoke.yml' &&
+       github.event.workflow_run.event == 'workflow_dispatch' &&
+       github.event.workflow_run.status == 'completed' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      EVENT_NAME: ${{ github.event_name }}
+      EVENT_ACTION: ${{ github.event.action }}
+      AUTO_RUN_ID: ${{ github.event.workflow_run.id }}
+      AUTO_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      AUTO_WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+      AUTO_WORKFLOW_PATH: ${{ github.event.workflow_run.path }}
+      AUTO_RUN_EVENT: ${{ github.event.workflow_run.event }}
+      AUTO_RUN_STATUS: ${{ github.event.workflow_run.status }}
+      AUTO_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      AUTO_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+      MANUAL_RUN_ID: ${{ inputs.smoke_run_id }}
+      MANUAL_RUN_ATTEMPT: ${{ inputs.smoke_run_attempt }}
+    steps:
+      - name: Validate completed smoke run and clean its deterministic branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          readonly EXPECTED_REPOSITORY="404prefrontalcortexnotfound/decent-curl-impersonate"
+          readonly EXPECTED_WORKFLOW="Updater CI dispatch smoke"
+          readonly EXPECTED_WORKFLOW_PATH=".github/workflows/updater-ci-dispatch-smoke.yml"
+          [[ "${REPOSITORY}" == "${EXPECTED_REPOSITORY}" ]]
+
+          if [[ "${EVENT_NAME}" == "workflow_run" ]]; then
+            [[ "${EVENT_ACTION}" == "completed" ]]
+            [[ "${AUTO_WORKFLOW_NAME}" == "${EXPECTED_WORKFLOW}" ]]
+            [[ "${AUTO_WORKFLOW_PATH}" == "${EXPECTED_WORKFLOW_PATH}" ]]
+            [[ "${AUTO_RUN_EVENT}" == "workflow_dispatch" ]]
+            [[ "${AUTO_RUN_STATUS}" == "completed" ]]
+            [[ "${AUTO_HEAD_BRANCH}" == "main" ]]
+            [[ "${AUTO_HEAD_REPOSITORY}" == "${EXPECTED_REPOSITORY}" ]]
+            run_id="${AUTO_RUN_ID}"
+            run_attempt="${AUTO_RUN_ATTEMPT}"
+          elif [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            run_id="${MANUAL_RUN_ID}"
+            run_attempt="${MANUAL_RUN_ATTEMPT}"
+          else
+            printf 'Unexpected cleanup event %s.\n' "${EVENT_NAME}" >&2
+            exit 1
+          fi
+          [[ "${run_id}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${run_attempt}" =~ ^[1-9][0-9]*$ ]]
+
+          run_json="$(gh api "repos/${EXPECTED_REPOSITORY}/actions/runs/${run_id}")"
+          jq -e 'type == "object"' <<<"${run_json}" > /dev/null
+          [[ "$(jq -r '.id' <<<"${run_json}")" == "${run_id}" ]]
+          [[ "$(jq -r '.run_attempt' <<<"${run_json}")" == "${run_attempt}" ]]
+          [[ "$(jq -r '.name' <<<"${run_json}")" == "${EXPECTED_WORKFLOW}" ]]
+          [[ "$(jq -r '.path' <<<"${run_json}")" == "${EXPECTED_WORKFLOW_PATH}" ]]
+          run_event="$(jq -r '.event' <<<"${run_json}")"
+          run_status="$(jq -r '.status' <<<"${run_json}")"
+          head_branch="$(jq -r '.head_branch' <<<"${run_json}")"
+          [[ "${run_event}" == "workflow_dispatch" ]]
+          [[ "${run_status}" == "completed" ]]
+          [[ "${head_branch}" == "main" ]]
+          [[ "$(jq -r '.repository.full_name' <<<"${run_json}")" == "${EXPECTED_REPOSITORY}" ]]
+          [[ "$(jq -r '.head_repository.full_name' <<<"${run_json}")" == "${EXPECTED_REPOSITORY}" ]]
+
+          branch_name="automation/token-pr-smoke-${run_id}-${run_attempt}"
+          pulls_pages="$(gh api --paginate --slurp --method GET \
+            "repos/${EXPECTED_REPOSITORY}/pulls" \
+            -f state=all \
+            -f head="404prefrontalcortexnotfound:${branch_name}" \
+            -f base=main \
+            -f per_page=100)"
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "array")' \
+            <<<"${pulls_pages}" > /dev/null
+          matching_prs="$(jq 'add' <<<"${pulls_pages}")"
+          matching_count="$(jq 'length' <<<"${matching_prs}")"
+          if [[ "${matching_count}" -gt 1 ]]; then
+            printf 'Ambiguous cleanup: %s PRs match %s.\n' \
+              "${matching_count}" "${branch_name}" >&2
+            exit 1
+          fi
+
+          if [[ "${matching_count}" -eq 1 ]]; then
+            pr_number="$(jq -r '.[0].number' <<<"${matching_prs}")"
+            [[ "${pr_number}" =~ ^[1-9][0-9]*$ ]]
+            pr_json="$(gh api "repos/${EXPECTED_REPOSITORY}/pulls/${pr_number}")"
+            jq -e --arg repository "${EXPECTED_REPOSITORY}" --arg branch "${branch_name}" '
+              type == "object" and
+              .base.repo.full_name == $repository and
+              .base.ref == "main" and
+              .head.repo.full_name == $repository and
+              .head.ref == $branch and
+              .merged == false and
+              .merged_at == null and
+              (.state == "open" or .state == "closed")
+            ' <<<"${pr_json}" > /dev/null
+
+            if [[ "$(jq -r '.state' <<<"${pr_json}")" == "open" ]]; then
+              gh api --method PATCH "repos/${EXPECTED_REPOSITORY}/pulls/${pr_number}" \
+                -f state=closed > /dev/null
+            fi
+            final_pr="$(gh api "repos/${EXPECTED_REPOSITORY}/pulls/${pr_number}")"
+            jq -e '.state == "closed" and .merged == false and .merged_at == null' \
+              <<<"${final_pr}" > /dev/null
+          fi
+
+          ref_error="${RUNNER_TEMP}/smoke-cleanup-ref-error"
+          if gh api "repos/${EXPECTED_REPOSITORY}/git/ref/heads/${branch_name}" \
+            > /dev/null 2>"${ref_error}"; then
+            gh api --method DELETE \
+              "repos/${EXPECTED_REPOSITORY}/git/refs/heads/${branch_name}" > /dev/null
+          elif ! grep -q 'HTTP 404' "${ref_error}"; then
+            cat "${ref_error}" >&2
+            exit 1
+          fi
+
+          if gh api "repos/${EXPECTED_REPOSITORY}/git/ref/heads/${branch_name}" \
+            > /dev/null 2>"${ref_error}"; then
+            printf 'Disposable branch %s still exists.\n' "${branch_name}" >&2
+            exit 1
+          elif ! grep -q 'HTTP 404' "${ref_error}"; then
+            cat "${ref_error}" >&2
+            exit 1
+          fi
+
+          open_pages="$(gh api --paginate --slurp --method GET \
+            "repos/${EXPECTED_REPOSITORY}/pulls" \
+            -f state=open \
+            -f head="404prefrontalcortexnotfound:${branch_name}" \
+            -f base=main \
+            -f per_page=100)"
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "array")' \
+            <<<"${open_pages}" > /dev/null
+          [[ "$(jq 'add | length' <<<"${open_pages}")" -eq 0 ]]
+          printf 'Cleanup verified for completed smoke run %s attempt %s.\n' \
+            "${run_id}" "${run_attempt}"
