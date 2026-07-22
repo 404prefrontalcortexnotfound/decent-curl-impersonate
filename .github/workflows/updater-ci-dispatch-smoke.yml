@@ -1,0 +1,334 @@
+name: Updater CI dispatch smoke
+run-name: "Updater CI dispatch smoke ${{ github.run_id }}-${{ github.run_attempt }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Create and then remove a disposable PR and branch
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: updater-ci-dispatch-smoke
+  cancel-in-progress: false
+
+jobs:
+  token-pr-smoke:
+    name: Disposable GITHUB_TOKEN PR smoke
+    if: ${{ inputs.confirm }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      STATE_FILE: updater-ci-smoke-state.json
+    steps:
+      - name: Create disposable branch and pull request
+        shell: bash
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+
+          readonly EXPECTED_REPOSITORY="404prefrontalcortexnotfound/decent-curl-impersonate"
+          [[ "${REPOSITORY}" == "${EXPECTED_REPOSITORY}" ]]
+
+          gate_id="smoke-${RUN_ID}-${RUN_ATTEMPT}"
+          branch_name="automation/token-pr-${gate_id}"
+          jq -n \
+            --arg gate_id "${gate_id}" \
+            --arg branch "${branch_name}" \
+            '{gate_id: $gate_id, branch: $branch, pr_number: null, head_sha: null, ci_run_id: null}' \
+            > "${STATE_FILE}"
+
+          base_ref="$(gh api "repos/${REPOSITORY}/git/ref/heads/main")"
+          base_sha="$(jq -r '.object.sha' <<<"${base_ref}")"
+          [[ "${base_sha}" =~ ^[0-9a-f]{40}$ ]]
+          base_commit="$(gh api "repos/${REPOSITORY}/git/commits/${base_sha}")"
+          base_tree="$(jq -r '.tree.sha' <<<"${base_commit}")"
+          [[ "${base_tree}" =~ ^[0-9a-f]{40}$ ]]
+
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "${tmp_dir}"' EXIT
+          gh api -H 'Accept: application/vnd.github.raw+json' \
+            "repos/${REPOSITORY}/contents/uv.lock?ref=${base_sha}" > "${tmp_dir}/uv.lock"
+          [[ -s "${tmp_dir}/uv.lock" ]]
+          printf '# updater-ci-dispatch-smoke: %s\n' "${gate_id}" >> "${tmp_dir}/uv.lock"
+
+          base64 -w0 "${tmp_dir}/uv.lock" \
+            | jq -Rs '{content: ., encoding: "base64"}' > "${tmp_dir}/blob.json"
+          blob_sha="$(gh api --method POST "repos/${REPOSITORY}/git/blobs" \
+            --input "${tmp_dir}/blob.json" --jq '.sha')"
+          [[ "${blob_sha}" =~ ^[0-9a-f]{40}$ ]]
+
+          jq -n --arg base_tree "${base_tree}" --arg blob_sha "${blob_sha}" \
+            '{base_tree: $base_tree, tree: [{path: "uv.lock", mode: "100644", type: "blob", sha: $blob_sha}]}' \
+            > "${tmp_dir}/tree.json"
+          tree_sha="$(gh api --method POST "repos/${REPOSITORY}/git/trees" \
+            --input "${tmp_dir}/tree.json" --jq '.sha')"
+          [[ "${tree_sha}" =~ ^[0-9a-f]{40}$ ]]
+
+          jq -n --arg tree "${tree_sha}" --arg parent "${base_sha}" \
+            '{message: "Prove exact-head updater CI dispatch", tree: $tree, parents: [$parent]}' \
+            > "${tmp_dir}/commit.json"
+          head_sha="$(gh api --method POST "repos/${REPOSITORY}/git/commits" \
+            --input "${tmp_dir}/commit.json" --jq '.sha')"
+          [[ "${head_sha}" =~ ^[0-9a-f]{40}$ ]]
+
+          jq -n --arg ref "refs/heads/${branch_name}" --arg sha "${head_sha}" \
+            '{ref: $ref, sha: $sha}' > "${tmp_dir}/ref.json"
+          gh api --method POST "repos/${REPOSITORY}/git/refs" --input "${tmp_dir}/ref.json" > /dev/null
+
+          tmp_state="${STATE_FILE}.tmp"
+          jq --arg head_sha "${head_sha}" '.head_sha = $head_sha' "${STATE_FILE}" > "${tmp_state}"
+          mv "${tmp_state}" "${STATE_FILE}"
+
+          jq -n --arg head "${branch_name}" \
+            '{
+              title: "Prove exact-head updater CI dispatch",
+              head: $head,
+              base: "main",
+              body: "This disposable pull request verifies explicitly dispatched CI on its exact head. Automation will close it and delete its branch; it will never be merged."
+            }' > "${tmp_dir}/pr.json"
+          pr_number="$(gh api --method POST "repos/${REPOSITORY}/pulls" \
+            --input "${tmp_dir}/pr.json" --jq '.number')"
+          [[ "${pr_number}" =~ ^[1-9][0-9]*$ ]]
+
+          jq --argjson pr_number "${pr_number}" '.pr_number = $pr_number' \
+            "${STATE_FILE}" > "${tmp_state}"
+          mv "${tmp_state}" "${STATE_FILE}"
+          printf 'Created disposable PR #%s at %s.\n' "${pr_number}" "${head_sha}"
+
+      - name: Explicitly dispatch CI on the exact PR head
+        shell: bash
+        run: |
+          set -euo pipefail
+          gate_id="$(jq -r '.gate_id' "${STATE_FILE}")"
+          branch_name="$(jq -r '.branch' "${STATE_FILE}")"
+          pr_number="$(jq -r '.pr_number' "${STATE_FILE}")"
+          head_sha="$(jq -r '.head_sha' "${STATE_FILE}")"
+          [[ "${gate_id}" =~ ^smoke-[0-9]+-[0-9]+$ ]]
+          [[ "${branch_name}" == "automation/token-pr-${gate_id}" ]]
+          [[ "${pr_number}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${head_sha}" =~ ^[0-9a-f]{40}$ ]]
+
+          gh api --method POST "repos/${REPOSITORY}/actions/workflows/ci.yml/dispatches" \
+            -f ref="${branch_name}" \
+            -f "inputs[gate_id]=${gate_id}" \
+            -f "inputs[pr_number]=${pr_number}" \
+            -f "inputs[expected_head_sha]=${head_sha}" \
+            -f 'inputs[validation_mode]=smoke'
+
+      - name: Locate the unique dispatched run
+        shell: bash
+        run: |
+          set -euo pipefail
+          gate_id="$(jq -r '.gate_id' "${STATE_FILE}")"
+          branch_name="$(jq -r '.branch' "${STATE_FILE}")"
+          pr_number="$(jq -r '.pr_number' "${STATE_FILE}")"
+          head_sha="$(jq -r '.head_sha' "${STATE_FILE}")"
+          expected_title="CI gate=${gate_id} pr=${pr_number} sha=${head_sha} mode=smoke"
+
+          ci_run_id=""
+          for _ in $(seq 1 60); do
+            runs="$(gh api --method GET "repos/${REPOSITORY}/actions/workflows/ci.yml/runs" \
+              -f event=workflow_dispatch -f branch="${branch_name}" -f per_page=100)"
+            matches="$(jq --arg title "${expected_title}" --arg sha "${head_sha}" --arg branch "${branch_name}" \
+              '[.workflow_runs[] | select(
+                .event == "workflow_dispatch" and
+                .display_title == $title and
+                .head_sha == $sha and
+                .head_branch == $branch and
+                .path == ".github/workflows/ci.yml"
+              )]' <<<"${runs}")"
+            count="$(jq 'length' <<<"${matches}")"
+            if (( count > 1 )); then
+              printf 'Ambiguous CI dispatch: %s exact matches.\n' "${count}" >&2
+              exit 1
+            fi
+            if (( count == 1 )); then
+              ci_run_id="$(jq -r '.[0].id' <<<"${matches}")"
+              break
+            fi
+            sleep 5
+          done
+          [[ "${ci_run_id}" =~ ^[1-9][0-9]*$ ]]
+
+          tmp_state="${STATE_FILE}.tmp"
+          jq --argjson ci_run_id "${ci_run_id}" '.ci_run_id = $ci_run_id' \
+            "${STATE_FILE}" > "${tmp_state}"
+          mv "${tmp_state}" "${STATE_FILE}"
+          printf 'Located unique CI run %s.\n' "${ci_run_id}"
+
+      - name: Verify exact-head CI checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha="$(jq -r '.head_sha' "${STATE_FILE}")"
+          branch_name="$(jq -r '.branch' "${STATE_FILE}")"
+          pr_number="$(jq -r '.pr_number' "${STATE_FILE}")"
+          ci_run_id="$(jq -r '.ci_run_id' "${STATE_FILE}")"
+          [[ "${head_sha}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${pr_number}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${ci_run_id}" =~ ^[1-9][0-9]*$ ]]
+
+          pr_json="$(gh api "repos/${REPOSITORY}/pulls/${pr_number}")"
+          [[ "$(jq -r '.state' <<<"${pr_json}")" == "open" ]]
+          [[ "$(jq -r '.base.ref' <<<"${pr_json}")" == "main" ]]
+          [[ "$(jq -r '.head.ref' <<<"${pr_json}")" == "${branch_name}" ]]
+          [[ "$(jq -r '.head.sha' <<<"${pr_json}")" == "${head_sha}" ]]
+
+          run_json=""
+          for _ in $(seq 1 180); do
+            run_json="$(gh api "repos/${REPOSITORY}/actions/runs/${ci_run_id}")"
+            status="$(jq -r '.status' <<<"${run_json}")"
+            [[ "$(jq -r '.event' <<<"${run_json}")" == "workflow_dispatch" ]]
+            [[ "$(jq -r '.head_sha' <<<"${run_json}")" == "${head_sha}" ]]
+            [[ "$(jq -r '.head_branch' <<<"${run_json}")" == "${branch_name}" ]]
+            if [[ "${status}" == "completed" ]]; then
+              break
+            fi
+            [[ "${status}" == "queued" || "${status}" == "in_progress" || "${status}" == "waiting" || "${status}" == "pending" ]]
+            sleep 10
+          done
+          [[ "$(jq -r '.status' <<<"${run_json}")" == "completed" ]]
+          [[ "$(jq -r '.conclusion' <<<"${run_json}")" == "success" ]]
+
+          jobs="$(gh api --paginate "repos/${REPOSITORY}/actions/runs/${ci_run_id}/jobs?per_page=100" --slurp | jq '{jobs: (map(.jobs) | add)}')"
+          checks="$(gh api "repos/${REPOSITORY}/commits/${head_sha}/check-runs?per_page=100")"
+          for expected_name in 'Test (ubuntu-24.04)' 'Test (macos-14)' 'Updater policy'; do
+            job_count="$(jq --arg name "${expected_name}" \
+              '[.jobs[] | select(.name == $name and .status == "completed" and .conclusion == "success")] | length' \
+              <<<"${jobs}")"
+            [[ "${job_count}" -eq 1 ]]
+
+            check_count="$(jq --arg name "${expected_name}" --arg run_path "/actions/runs/${ci_run_id}/" \
+              '[.check_runs[] | select(
+                .name == $name and
+                .status == "completed" and
+                .conclusion == "success" and
+                .app.slug == "github-actions" and
+                (.details_url | contains($run_path))
+              )] | length' <<<"${checks}")"
+            [[ "${check_count}" -eq 1 ]]
+          done
+          printf 'All three required checks succeeded on exact head %s in run %s.\n' \
+            "${head_sha}" "${ci_run_id}"
+
+      - name: Inspect effective required-check rules
+        shell: bash
+        run: |
+          set -euo pipefail
+          error_file="${RUNNER_TEMP}/branch-rules-error"
+          if ! rules="$(gh api "repos/${REPOSITORY}/rules/branches/main" 2>"${error_file}")"; then
+            if grep -q 'HTTP 404' "${error_file}"; then
+              echo '::notice::No effective branch rules are configured for main; exact required-check recognition still needs live verification after rules are added.'
+              exit 0
+            fi
+            cat "${error_file}" >&2
+            exit 1
+          fi
+
+          configured="$(jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context] | unique' <<<"${rules}")"
+          if [[ "$(jq 'length' <<<"${configured}")" -eq 0 ]]; then
+            echo '::notice::No required status checks are configured for main; exact required-check recognition still needs live verification after rules are added.'
+            exit 0
+          fi
+
+          for expected_name in 'Test (ubuntu-24.04)' 'Test (macos-14)' 'Updater policy'; do
+            [[ "$(jq --arg name "${expected_name}" '[.[] | select(. == $name)] | length' <<<"${configured}")" -eq 1 ]]
+          done
+          echo 'Effective main rules require all three exact dispatched check names.'
+
+      - name: Always close the PR and delete the branch
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          cleanup_failed=false
+
+          if [[ ! -s "${STATE_FILE}" ]] || ! jq -e . "${STATE_FILE}" > /dev/null; then
+            echo 'Smoke state is missing or malformed; cleanup cannot be proven.' >&2
+            exit 1
+          fi
+
+          branch_name="$(jq -r '.branch // empty' "${STATE_FILE}")"
+          pr_number="$(jq -r '.pr_number // empty' "${STATE_FILE}")"
+          [[ "${branch_name}" =~ ^automation/token-pr-smoke-[0-9]+-[0-9]+$ ]] || cleanup_failed=true
+
+          if [[ -z "${pr_number}" && "${branch_name}" =~ ^automation/token-pr-smoke-[0-9]+-[0-9]+$ ]]; then
+            matching_prs="$(gh api --method GET "repos/${REPOSITORY}/pulls" \
+              -f state=all \
+              -f head="404prefrontalcortexnotfound:${branch_name}" \
+              -f base=main \
+              -f per_page=100)" || cleanup_failed=true
+            if [[ "${cleanup_failed}" == "false" ]]; then
+              matching_count="$(jq 'length' <<<"${matching_prs}")"
+              if [[ "${matching_count}" -eq 1 ]]; then
+                pr_number="$(jq -r '.[0].number' <<<"${matching_prs}")"
+              elif [[ "${matching_count}" -gt 1 ]]; then
+                echo "Multiple disposable PRs unexpectedly use ${branch_name}." >&2
+                cleanup_failed=true
+              fi
+            fi
+          fi
+
+          if [[ -n "${pr_number}" ]]; then
+            if [[ ! "${pr_number}" =~ ^[1-9][0-9]*$ ]]; then
+              cleanup_failed=true
+            elif pr_json="$(gh api "repos/${REPOSITORY}/pulls/${pr_number}")"; then
+              if [[ "$(jq -r '.merged_at' <<<"${pr_json}")" != "null" ]]; then
+                echo "Disposable PR #${pr_number} was merged unexpectedly." >&2
+                cleanup_failed=true
+              fi
+              if [[ "$(jq -r '.state' <<<"${pr_json}")" == "open" ]]; then
+                if ! gh api --method PATCH "repos/${REPOSITORY}/pulls/${pr_number}" -f state=closed > /dev/null; then
+                  cleanup_failed=true
+                fi
+              fi
+              if final_pr="$(gh api "repos/${REPOSITORY}/pulls/${pr_number}")"; then
+                [[ "$(jq -r '.state' <<<"${final_pr}")" == "closed" ]] || cleanup_failed=true
+                [[ "$(jq -r '.merged_at' <<<"${final_pr}")" == "null" ]] || cleanup_failed=true
+              else
+                cleanup_failed=true
+              fi
+            else
+              cleanup_failed=true
+            fi
+          fi
+
+          ref_error="${RUNNER_TEMP}/delete-ref-error"
+          if [[ -n "${branch_name}" ]]; then
+            if gh api "repos/${REPOSITORY}/git/ref/heads/${branch_name}" > /dev/null 2>"${ref_error}"; then
+              if ! gh api --method DELETE "repos/${REPOSITORY}/git/refs/heads/${branch_name}" > /dev/null; then
+                cleanup_failed=true
+              fi
+            elif ! grep -q 'HTTP 404' "${ref_error}"; then
+              cat "${ref_error}" >&2
+              cleanup_failed=true
+            fi
+
+            if gh api "repos/${REPOSITORY}/git/ref/heads/${branch_name}" > /dev/null 2>"${ref_error}"; then
+              echo "Disposable branch ${branch_name} still exists." >&2
+              cleanup_failed=true
+            elif ! grep -q 'HTTP 404' "${ref_error}"; then
+              cat "${ref_error}" >&2
+              cleanup_failed=true
+            fi
+          fi
+
+          if [[ "${cleanup_failed}" == "true" ]]; then
+            echo 'Disposable smoke cleanup did not complete cleanly.' >&2
+            exit 1
+          fi
+          echo 'Disposable PR is closed without merge and its branch is absent.'

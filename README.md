@@ -126,6 +126,14 @@ The network fingerprint test is intentionally opt-in:
 DECENT_CURL_LIVE_TESTS=1 bun test test/live-fingerprint.test.ts
 ```
 
+Maintainers can manually prove that an explicitly dispatched CI run attaches the required checks to an exact pull-request head after the smoke workflow is present on `main`:
+
+```sh
+gh workflow run updater-ci-dispatch-smoke.yml --ref main -f confirm=true
+```
+
+The smoke uses only `GITHUB_TOKEN`, creates a uniquely named same-repository branch and disposable pull request, and always attempts to close the pull request without merging and delete the branch. It does not approve, tag, publish, release, or invoke an AI service. If required-check rules are not configured yet, the run reports that explicitly instead of claiming ruleset verification.
+
 ## Attribution
 
 Original extension code is MIT licensed; see [LICENSE](LICENSE). It depends at runtime on `curl_cffi` and its bundled curl-impersonate, curl, and BoringSSL components. Exact upstream locks and third-party license information are in [`upstream/`](upstream/) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
