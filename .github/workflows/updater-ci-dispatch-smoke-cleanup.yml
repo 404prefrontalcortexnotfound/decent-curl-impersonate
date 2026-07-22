@@ -27,7 +27,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' &&
        github.event.action == 'completed' &&
-       github.event.workflow_run.name == 'Updater CI dispatch smoke' &&
+       github.repository == '404prefrontalcortexnotfound/decent-curl-impersonate' &&
        github.event.workflow_run.path == '.github/workflows/updater-ci-dispatch-smoke.yml' &&
        github.event.workflow_run.event == 'workflow_dispatch' &&
        github.event.workflow_run.status == 'completed' &&
@@ -46,7 +46,6 @@ jobs:
       EVENT_ACTION: ${{ github.event.action }}
       AUTO_RUN_ID: ${{ github.event.workflow_run.id }}
       AUTO_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-      AUTO_WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
       AUTO_WORKFLOW_PATH: ${{ github.event.workflow_run.path }}
       AUTO_RUN_EVENT: ${{ github.event.workflow_run.event }}
       AUTO_RUN_STATUS: ${{ github.event.workflow_run.status }}
@@ -61,13 +60,11 @@ jobs:
           set -euo pipefail
 
           readonly EXPECTED_REPOSITORY="404prefrontalcortexnotfound/decent-curl-impersonate"
-          readonly EXPECTED_WORKFLOW="Updater CI dispatch smoke"
           readonly EXPECTED_WORKFLOW_PATH=".github/workflows/updater-ci-dispatch-smoke.yml"
           [[ "${REPOSITORY}" == "${EXPECTED_REPOSITORY}" ]]
 
           if [[ "${EVENT_NAME}" == "workflow_run" ]]; then
             [[ "${EVENT_ACTION}" == "completed" ]]
-            [[ "${AUTO_WORKFLOW_NAME}" == "${EXPECTED_WORKFLOW}" ]]
             [[ "${AUTO_WORKFLOW_PATH}" == "${EXPECTED_WORKFLOW_PATH}" ]]
             [[ "${AUTO_RUN_EVENT}" == "workflow_dispatch" ]]
             [[ "${AUTO_RUN_STATUS}" == "completed" ]]
@@ -85,12 +82,21 @@ jobs:
           [[ "${run_id}" =~ ^[1-9][0-9]*$ ]]
           [[ "${run_attempt}" =~ ^[1-9][0-9]*$ ]]
 
+          workflow_json="$(gh api "repos/${EXPECTED_REPOSITORY}/actions/workflows/updater-ci-dispatch-smoke.yml")"
+          jq -e --arg expected_path "${EXPECTED_WORKFLOW_PATH}" '
+            type == "object" and
+            (.id | type == "number" and . > 0) and
+            .path == $expected_path
+          ' <<<"${workflow_json}" > /dev/null
+          expected_workflow_id="$(jq -r '.id' <<<"${workflow_json}")"
+
           run_json="$(gh api "repos/${EXPECTED_REPOSITORY}/actions/runs/${run_id}")"
           jq -e 'type == "object"' <<<"${run_json}" > /dev/null
           [[ "$(jq -r '.id' <<<"${run_json}")" == "${run_id}" ]]
           [[ "$(jq -r '.run_attempt' <<<"${run_json}")" == "${run_attempt}" ]]
-          [[ "$(jq -r '.name' <<<"${run_json}")" == "${EXPECTED_WORKFLOW}" ]]
           [[ "$(jq -r '.path' <<<"${run_json}")" == "${EXPECTED_WORKFLOW_PATH}" ]]
+          run_workflow_id="$(jq -r '.workflow_id' <<<"${run_json}")"
+          [[ "${run_workflow_id}" == "${expected_workflow_id}" ]]
           run_event="$(jq -r '.event' <<<"${run_json}")"
           run_status="$(jq -r '.status' <<<"${run_json}")"
           head_branch="$(jq -r '.head_branch' <<<"${run_json}")"
