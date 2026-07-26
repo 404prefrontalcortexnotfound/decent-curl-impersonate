@@ -1,6 +1,6 @@
 {
   "name": "decent-curl-impersonate",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Browser-impersonated HTTP tools for Pi backed by curl_cffi",
   "type": "module",
   "license": "MIT",

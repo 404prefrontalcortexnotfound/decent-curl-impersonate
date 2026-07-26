@@ -25,7 +25,7 @@ uv sync --frozen --python 3.13
 bun run build
 ```
 
-## Tool (version 0.2.0)
+## Tool (version 0.2.1)
 
 The extension registers exactly one model-visible tool, `decent_curl`. Pass an `operation` and an optional `args` object:
 
