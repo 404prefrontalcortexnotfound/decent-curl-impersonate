@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "decent-curl-impersonate"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python worker for the decent-curl-impersonate Pi package"
 requires-python = ">=3.13,<3.15"
 dependencies = [

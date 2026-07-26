@@ -25,63 +25,85 @@ uv sync --frozen --python 3.13
 bun run build
 ```
 
-## Tools
+## Tool (version 0.2.0)
 
-### `decent_curl_profiles`
-
-- `action: "list"` discovers profiles from the installed `curl_cffi`; profile availability isn't hard-coded.
-- `action: "fingerprint"` requests `https://tls.browserleaks.com/json` by default. `profile` and an alternate public HTTP(S) `url` are optional.
+The extension registers exactly one model-visible tool, `decent_curl`. Pass an `operation` and an optional `args` object:
 
 ```json
-{"action":"list"}
+{"operation":"profiles.list","args":{}}
 ```
 
-### `decent_curl_request`
+The gateway accepts these eleven operations:
 
-Makes an HTTP request. Required: `url`. Options: arbitrary `method`, `query`, `headers`, Basic or Bearer `auth`, browser `profile`, `http_version` (`auto`, `1.1`, `2`, `3`), `proxy`, `allow_redirects` (`false`, `true`, or `safe`), `max_redirects`, `timeout`, `retries`, `verify`, and `session_id`. Supply at most one body: `json`, `form`, raw text `content`, or `multipart` fields/files.
+- `request`
+- `download`
+- `session.create`, `session.list`, `session.close`
+- `websocket.connect`, `websocket.send`, `websocket.receive`, `websocket.close`
+- `profiles.list`, `profiles.fingerprint`
+
+The small standing schema is intentionally generic. The gateway selects the authoritative operation schema at runtime, rejects unknown or operation-inappropriate fields before starting worker work, and returns value-free `{path, message}` validation errors. Unknown operations are handled safely inside the tool and list the valid names without echoing `args`.
+
+### Requests
+
+`request` requires `url`. It also accepts arbitrary `method`, `query`, `headers`, Basic or Bearer `auth`, browser `profile`, `http_version` (`auto`, `1.1`, `2`, `3`), `proxy`, `allow_redirects` (`false`, `true`, or `safe`), `max_redirects`, `timeout`, `retries`, `verify`, and `session_id`. Supply at most one body: `json`, `form`, raw text `content`, binary `content_base64`, or `multipart`.
 
 ```json
 {
-  "url": "https://example.com/api",
-  "method": "POST",
-  "profile": "chrome136",
-  "json": {"hello": "world"},
-  "allow_redirects": "safe",
-  "timeout": 20
+  "operation": "request",
+  "args": {
+    "url": "https://example.com/api",
+    "method": "POST",
+    "profile": "chrome136",
+    "json": {"hello": "world"},
+    "allow_redirects": "safe",
+    "timeout": 20
+  }
 }
 ```
 
-HTTP/3 works only where the bundled libcurl and network support it. A selected profile must appear in the list action.
+Authentication is either `{"type":"basic","username":"user","password":"secret"}` or `{"type":"bearer","token":"secret"}`. Multipart values use `{"value":"text","content_type":"text/plain"}`; files use `{"path":"/private/file","filename":"name.txt","content_type":"text/plain"}`.
 
-### `decent_curl_download`
+HTTP/3 works only where the bundled libcurl and network support it. A selected profile must appear in `profiles.list`.
 
-Streams a GET to disk and returns its path, size, SHA-256, content type, status, final URL, and profile. It accepts the request transport/session options above plus `path` and `overwrite`. An omitted path creates a user-only temporary directory. Parent directories are mode `0700` and downloaded files mode `0600` on POSIX. Existing files aren't replaced unless `overwrite: true`.
+### Downloads
+
+`download` streams a GET to disk and returns its path, size, SHA-256, content type, status, final URL, and profile. It accepts the request transport/session options plus `path` and `overwrite`. An omitted path creates a user-only temporary directory. Parent directories are mode `0700` and downloaded files mode `0600` on POSIX. Existing files aren't replaced unless `overwrite: true`.
 
 ```json
-{"url":"https://example.com/archive.zip","path":"/tmp/archive.zip"}
+{"operation":"download","args":{"url":"https://example.com/archive.zip","path":"/tmp/archive.zip"}}
 ```
 
-### `decent_curl_session`
+### Sessions
 
-- `create`: creates an in-memory session; optional `profile` becomes its default.
-- `list`: lists opaque session IDs and profiles.
-- `close`: closes the required `session_id`.
+- `session.create`: creates an in-memory session; optional `profile` becomes its default.
+- `session.list`: lists opaque session IDs and profiles.
+- `session.close`: closes the required `session_id`.
 
 Sessions retain cookies and connections only for the Pi process lifetime.
 
 ```json
-{"action":"create","profile":"chrome136"}
+{"operation":"session.create","args":{"profile":"chrome136"}}
 ```
 
-### `decent_curl_websocket`
+### WebSockets
 
-- `connect`: requires a `ws://` or `wss://` `url`; accepts `headers`, `profile`, `proxy`, `verify`, `timeout`, and `session_id`; returns an opaque `websocket_id`.
-- `send`: requires `websocket_id` and exactly one of text `message` or binary `data_base64`; optional `timeout`.
-- `receive`: requires `websocket_id`; optional `timeout`; returns UTF-8 text in `message` or binary bytes in `data_base64`.
-- `close`: requires `websocket_id`; optional close `code` and `reason`.
+- `websocket.connect`: requires a `ws://` or `wss://` `url`; accepts `headers`, `profile`, `proxy`, `verify`, `timeout`, and `session_id`; returns an opaque `websocket_id`.
+- `websocket.send`: requires `websocket_id` and exactly one of text `message` or binary `data_base64`; optional `timeout`.
+- `websocket.receive`: requires `websocket_id`; optional `timeout`; returns UTF-8 text or base64 binary content.
+- `websocket.close`: requires `websocket_id`; optional close `code` and `reason`.
 
 ```json
-{"action":"connect","url":"wss://example.com/socket","profile":"chrome136"}
+{"operation":"websocket.connect","args":{"url":"wss://example.com/socket","profile":"chrome136"}}
+```
+
+Subsequent calls use the returned handle, for example `{"operation":"websocket.send","args":{"websocket_id":"…","message":"hello"}}`, then `websocket.receive` or `websocket.close` with the same ID.
+
+### Profiles and fingerprints
+
+`profiles.list` discovers installed `curl_cffi` profiles rather than relying on a hard-coded list. `profiles.fingerprint` requests `https://tls.browserleaks.com/json` by default; `profile` and an alternate public HTTP(S) `url` are optional.
+
+```json
+{"operation":"profiles.fingerprint","args":{"profile":"chrome136"}}
 ```
 
 ## Privacy and security
@@ -98,7 +120,7 @@ Pi loads `dist/index.js`. A lazy `WorkerClient` starts the package-local Python 
 
 ## Limitations
 
-Version 0.1 is HTTP/WebSocket only. It doesn't import browser profiles or encrypted cookies, solve CAPTCHAs, execute JavaScript, emulate user behavior, or support FTP/SFTP. Fingerprint profiles approximate named browser releases; websites can still detect automation or change requirements. No bypass is guaranteed. Use only where you have authorization and comply with service terms.
+Version 0.2 is HTTP/WebSocket only. It doesn't import browser profiles or encrypted cookies, solve CAPTCHAs, execute JavaScript, emulate user behavior, or support FTP/SFTP. Fingerprint profiles approximate named browser releases; websites can still detect automation or change requirements. No bypass is guaranteed. Use only where you have authorization and comply with service terms.
 
 ## Troubleshooting
 
