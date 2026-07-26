@@ -2,11 +2,12 @@ import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import packageMetadata from "../package.json" with { type: "json" };
 
 import { WorkerClient, resolvePythonCommand } from "./worker-client.js";
-import { createToolDefinitions, type WorkerCaller } from "./tools.js";
+import { createToolDefinition, type WorkerCaller } from "./tools.js";
 
-const PACKAGE_VERSION = "0.1.0";
+const PACKAGE_VERSION = packageMetadata.version;
 const STATUS_SCRIPT = [
   "import json, platform",
   "import curl_cffi",
@@ -43,7 +44,7 @@ export function registerDecentCurlExtension(
   const runCapture = dependencies.runCapture ?? runCommandCapture;
   const packageVersion = dependencies.packageVersion ?? PACKAGE_VERSION;
 
-  for (const tool of createToolDefinitions(worker)) pi.registerTool(tool);
+  pi.registerTool(createToolDefinition(worker));
 
   pi.registerCommand("decent-curl-setup", {
     description: "Create the frozen package-local Python 3.13 environment",

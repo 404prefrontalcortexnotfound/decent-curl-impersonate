@@ -9,6 +9,9 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
+import { Type } from "typebox";
+import { Value } from "typebox/value";
+
 import type { WorkerOperation } from "./protocol.js";
 import {
   DownloadParameters,
@@ -31,77 +34,213 @@ type ToolResult = {
   details: Record<string, unknown>;
 };
 
-export function createToolDefinitions(worker: WorkerCaller): ToolDefinition<any, Record<string, unknown>>[] {
-  return [
-    {
-      name: "decent_curl_request",
-      label: "Browser HTTP request",
-      description: "Make an HTTP request using curl_cffi browser impersonation. Response bodies are returned as text. Authorization, Cookie, proxy credentials, request bodies, and upload contents are sensitive and excluded from result details.",
-      parameters: RequestParameters,
-      async execute(_id, params, signal): Promise<ToolResult> {
-        const result = asRecord(await worker.call("request.execute", asRecord(params), signal));
-        return responseResult(result);
-      },
+const GatewayParameters = Type.Object({
+  operation: Type.String(),
+  args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+}, { additionalProperties: false });
+
+const OPERATION_TABLE = {
+  request: {
+    workerOperation: "request.execute",
+    schema: RequestParameters,
+    allowed: Object.keys(RequestParameters.properties),
+    required: ["url"],
+    renderer: "response",
+  },
+  download: {
+    workerOperation: "download.execute",
+    schema: DownloadParameters,
+    allowed: Object.keys(DownloadParameters.properties),
+    required: ["url"],
+    renderer: "download",
+  },
+  "session.create": {
+    workerOperation: "session.create",
+    action: "create",
+    schema: SessionParameters,
+    allowed: ["profile"],
+    required: [],
+    renderer: "session",
+  },
+  "session.list": {
+    workerOperation: "session.list",
+    action: "list",
+    schema: SessionParameters,
+    allowed: [],
+    required: [],
+    renderer: "session",
+  },
+  "session.close": {
+    workerOperation: "session.close",
+    action: "close",
+    schema: SessionParameters,
+    allowed: ["session_id"],
+    required: ["session_id"],
+    renderer: "session",
+  },
+  "websocket.connect": {
+    workerOperation: "websocket.connect",
+    action: "connect",
+    schema: WebSocketParameters,
+    allowed: ["url", "headers", "profile", "proxy", "verify", "session_id", "timeout"],
+    required: ["url"],
+    renderer: "websocket",
+  },
+  "websocket.send": {
+    workerOperation: "websocket.send",
+    action: "send",
+    schema: WebSocketParameters,
+    allowed: ["websocket_id", "message", "data_base64", "timeout"],
+    required: ["websocket_id"],
+    renderer: "websocket",
+  },
+  "websocket.receive": {
+    workerOperation: "websocket.receive",
+    action: "receive",
+    schema: WebSocketParameters,
+    allowed: ["websocket_id", "timeout"],
+    required: ["websocket_id"],
+    renderer: "websocket",
+  },
+  "websocket.close": {
+    workerOperation: "websocket.close",
+    action: "close",
+    schema: WebSocketParameters,
+    allowed: ["websocket_id", "code", "reason"],
+    required: ["websocket_id"],
+    renderer: "websocket",
+  },
+  "profiles.list": {
+    workerOperation: "profiles.list",
+    action: "list",
+    schema: ProfilesParameters,
+    allowed: [],
+    required: [],
+    renderer: "profiles",
+  },
+  "profiles.fingerprint": {
+    workerOperation: "diagnostic.fingerprint",
+    action: "fingerprint",
+    schema: ProfilesParameters,
+    allowed: ["profile", "url"],
+    required: [],
+    renderer: "response",
+  },
+} as const;
+
+type GatewayOperation = keyof typeof OPERATION_TABLE;
+type ValidationError = { path: string; message: string };
+
+const VALID_OPERATIONS = Object.keys(OPERATION_TABLE) as GatewayOperation[];
+const GATEWAY_DESCRIPTION = [
+  "Browser-impersonated HTTP gateway. Select operation and put its fields in args.",
+  "Operations: request (url required; method/query/headers/auth/profile/http_version/proxy/allow_redirects/max_redirects/timeout/retries/verify/session_id; one mutually exclusive body: json, form, content, content_base64, or multipart), download (url plus request transport fields/path/overwrite), session.create/list/close, websocket.connect/send/receive/close, profiles.list, profiles.fingerprint.",
+  "Authentication: {type:'basic',username,password} or {type:'bearer',token}. Multipart parts are {path,filename?,content_type?} files or {value,content_type?} values. allow_redirects may be true, false, or 'safe'. WebSocket send uses exactly one of message or data_base64.",
+  "Headers, authentication, proxies, query values, request bodies, upload content, and outbound WebSocket messages may contain secrets: never disclose them.",
+].join(" ");
+
+export function createToolDefinition(worker: WorkerCaller): ToolDefinition<any, Record<string, unknown>> {
+  return {
+    name: "decent_curl",
+    label: "Browser HTTP gateway",
+    description: GATEWAY_DESCRIPTION,
+    parameters: GatewayParameters,
+    async execute(_id, params, signal): Promise<ToolResult> {
+      const envelope = asRecord(params);
+      const operation = envelope.operation;
+      if (!isGatewayOperation(operation)) return unknownOperationResult();
+
+      const envelopeErrors = safeSchemaErrors(GatewayParameters, params);
+      if (envelopeErrors.length > 0) return validationResult(envelopeErrors);
+      const args = envelope.args === undefined ? {} : asRecord(envelope.args);
+      const spec = OPERATION_TABLE[operation];
+      const candidate = "action" in spec ? { ...args, action: spec.action } : args;
+      const errors = [
+        ...safeSchemaErrors(spec.schema, candidate, "/args"),
+        ...operationErrors(operation, args, spec.allowed, spec.required),
+      ];
+      if (errors.length > 0) return validationResult(errors);
+
+      const result = asRecord(await worker.call(spec.workerOperation as WorkerOperation, args, signal));
+      return renderResult(spec.renderer, operation, result);
     },
-    {
-      name: "decent_curl_download",
-      label: "Browser HTTP download",
-      description: "Stream an HTTP download to a private file using browser impersonation. Authorization, Cookie, and proxy credentials are sensitive and excluded from result details.",
-      parameters: DownloadParameters,
-      async execute(_id, params, signal): Promise<ToolResult> {
-        const result = asRecord(await worker.call("download.execute", asRecord(params), signal));
-        const details = pick(result, ["path", "size", "content_type", "status", "url", "profile", "sha256"]);
-        sanitizeUrlMetadata(details);
-        const path = typeof details.path === "string" ? details.path : "unknown path";
-        const size = typeof details.size === "number" ? ` (${details.size} bytes)` : "";
-        return { content: [{ type: "text", text: `Downloaded to ${path}${size}` }], details };
-      },
-    },
-    {
-      name: "decent_curl_session",
-      label: "Browser HTTP session",
-      description: "Create, list, or close named in-memory HTTP sessions. Cookie values and credentials are sensitive and are never returned.",
-      parameters: SessionParameters,
-      async execute(_id, params, signal): Promise<ToolResult> {
-        const { action, ...operationParams } = params as Record<string, unknown> & { action: "create" | "list" | "close" };
-        const result = asRecord(await worker.call(`session.${action}`, operationParams, signal));
-        const details = sessionDetails(result);
-        return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
-      },
-    },
-    {
-      name: "decent_curl_websocket",
-      label: "Browser WebSocket",
-      description: "Connect, send, receive, or close a browser-impersonated WebSocket. Authorization, Cookie, proxy credentials, and outbound messages are sensitive and excluded from result details.",
-      parameters: WebSocketParameters,
-      async execute(_id, params, signal): Promise<ToolResult> {
-        const { action, ...operationParams } = params as Record<string, unknown> & {
-          action: "connect" | "send" | "receive" | "close";
-        };
-        const result = asRecord(await worker.call(`websocket.${action}`, operationParams, signal));
-        return websocketResult(action, result);
-      },
-    },
-    {
-      name: "decent_curl_profiles",
-      label: "Browser profiles",
-      description: "List installed curl_cffi browser profiles or run a public fingerprint diagnostic.",
-      parameters: ProfilesParameters,
-      async execute(_id, params, signal): Promise<ToolResult> {
-        const { action, ...operationParams } = params as Record<string, unknown> & { action: "list" | "fingerprint" };
-        const operation = action === "list" ? "profiles.list" : "diagnostic.fingerprint";
-        const result = asRecord(await worker.call(operation, operationParams, signal));
-        if (action === "fingerprint" && typeof result.body === "string") return responseResult(result);
-        const profiles = stringArray(result.profiles);
-        const families = stringArray(result.families);
-        const details = { profile_count: profiles.length, families };
-        return {
-          content: [{ type: "text", text: JSON.stringify({ profiles, families }, null, 2) }],
-          details,
-        };
-      },
-    },
-  ];
+  };
+}
+
+function isGatewayOperation(value: unknown): value is GatewayOperation {
+  return typeof value === "string" && Object.hasOwn(OPERATION_TABLE, value);
+}
+
+function safeSchemaErrors(schema: any, candidate: unknown, prefix = ""): ValidationError[] {
+  return [...Value.Errors(schema, candidate)].map((error) => ({
+    path: `${prefix}${error.instancePath}`,
+    message: error.message,
+  }));
+}
+
+function operationErrors(
+  operation: GatewayOperation,
+  args: Record<string, unknown>,
+  allowed: readonly string[],
+  required: readonly string[],
+): ValidationError[] {
+  const errors: ValidationError[] = [];
+  if (Object.keys(args).some((key) => !allowed.includes(key))) {
+    errors.push({ path: "/args", message: "contains a field not valid for this operation" });
+  }
+  for (const key of required) {
+    if (!(key in args) || args[key] === "") errors.push({ path: `/args/${key}`, message: "is required" });
+  }
+  if (operation === "request") {
+    const bodies = ["json", "form", "content", "content_base64", "multipart"]
+      .filter((key) => args[key] !== undefined && args[key] !== null);
+    if (bodies.length > 1) errors.push({ path: "/args", message: "request bodies are mutually exclusive" });
+  }
+  if (operation === "websocket.send") {
+    const payloads = ["message", "data_base64"].filter((key) => args[key] !== undefined && args[key] !== null);
+    if (payloads.length !== 1) errors.push({ path: "/args", message: "exactly one WebSocket message is required" });
+  }
+  return errors;
+}
+
+function unknownOperationResult(): ToolResult {
+  const text = `Unknown operation. Valid operations: ${VALID_OPERATIONS.join(", ")}`;
+  return { content: [{ type: "text", text }], details: { valid_operations: VALID_OPERATIONS } };
+}
+
+function validationResult(errors: ValidationError[]): ToolResult {
+  return {
+    content: [{ type: "text", text: `Invalid arguments:\n${JSON.stringify(errors, null, 2)}` }],
+    details: { errors },
+  };
+}
+
+async function renderResult(
+  renderer: "response" | "download" | "session" | "websocket" | "profiles",
+  operation: GatewayOperation,
+  result: Record<string, unknown>,
+): Promise<ToolResult> {
+  if (renderer === "response") return responseResult(result);
+  if (renderer === "download") {
+    const details = pick(result, ["path", "size", "content_type", "status", "url", "profile", "sha256"]);
+    sanitizeUrlMetadata(details);
+    const path = typeof details.path === "string" ? details.path : "unknown path";
+    const size = typeof details.size === "number" ? ` (${details.size} bytes)` : "";
+    return { content: [{ type: "text", text: `Downloaded to ${path}${size}` }], details };
+  }
+  if (renderer === "session") {
+    const details = sessionDetails(result);
+    return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
+  }
+  if (renderer === "websocket") return websocketResult(operation.split(".")[1], result);
+
+  const profiles = stringArray(result.profiles);
+  const families = stringArray(result.families);
+  const details = { profile_count: profiles.length, families };
+  return {
+    content: [{ type: "text", text: JSON.stringify({ profiles, families }, null, 2) }],
+    details,
+  };
 }
 
 async function responseResult(result: Record<string, unknown>): Promise<ToolResult> {

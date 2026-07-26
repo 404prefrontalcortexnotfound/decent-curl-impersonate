@@ -26,48 +26,12 @@ const MultipartPart = Type.Union([
     path: Type.String({ description: "Upload path. The uploaded file contents are sensitive and are never returned in details." }),
     filename: Type.Optional(Type.String()),
     content_type: Type.Optional(Type.String()),
-    value: Type.Optional(Type.Never()),
   }, { additionalProperties: false }),
   Type.Object({
     value: Type.String({ description: "Multipart text value; may be sensitive." }),
     content_type: Type.Optional(Type.String()),
-    path: Type.Optional(Type.Never()),
-    filename: Type.Optional(Type.Never()),
   }, { additionalProperties: false }),
 ]);
-
-const NoBody = Type.Object({
-  json: Type.Optional(Type.Never()),
-  form: Type.Optional(Type.Never()),
-  content: Type.Optional(Type.Never()),
-  multipart: Type.Optional(Type.Never()),
-});
-const JsonBody = Type.Object({
-  json: Type.Unknown({ description: "JSON request body; may contain sensitive data." }),
-  form: Type.Optional(Type.Never()),
-  content: Type.Optional(Type.Never()),
-  multipart: Type.Optional(Type.Never()),
-});
-const FormBody = Type.Object({
-  form: Type.Record(Type.String(), Type.Unknown(), { description: "Form request body; values may be sensitive." }),
-  json: Type.Optional(Type.Never()),
-  content: Type.Optional(Type.Never()),
-  multipart: Type.Optional(Type.Never()),
-});
-const ContentBody = Type.Object({
-  content: Type.String({ description: "Raw text request body; may be sensitive." }),
-  json: Type.Optional(Type.Never()),
-  form: Type.Optional(Type.Never()),
-  multipart: Type.Optional(Type.Never()),
-});
-const MultipartBody = Type.Object({
-  multipart: Type.Record(Type.String(), MultipartPart, {
-    description: "Multipart fields and file uploads; values and uploaded file contents may be sensitive.",
-  }),
-  json: Type.Optional(Type.Never()),
-  form: Type.Optional(Type.Never()),
-  content: Type.Optional(Type.Never()),
-});
 
 const RequestOptions = {
   url: Type.String({ description: "HTTP or HTTPS URL. Do not embed credentials in the URL." }),
@@ -91,10 +55,18 @@ const RequestOptions = {
   session_id: Type.Optional(Type.String()),
 };
 
-export const RequestParameters = Type.Intersect([
-  Type.Object(RequestOptions),
-  Type.Union([NoBody, JsonBody, FormBody, ContentBody, MultipartBody]),
-]);
+export const RequestParameters = Type.Object({
+  ...RequestOptions,
+  json: Type.Optional(Type.Unknown({ description: "JSON request body; may contain sensitive data." })),
+  form: Type.Optional(Type.Record(Type.String(), Type.Unknown(), {
+    description: "Form request body; values may be sensitive.",
+  })),
+  content: Type.Optional(Type.String({ description: "Raw text request body; may be sensitive." })),
+  content_base64: Type.Optional(Type.String({ description: "Base64 request body; may contain sensitive data." })),
+  multipart: Type.Optional(Type.Record(Type.String(), MultipartPart, {
+    description: "Multipart fields and file uploads; values and uploaded file contents may be sensitive.",
+  })),
+}, { additionalProperties: false });
 
 export const DownloadParameters = Type.Object({
   url: RequestOptions.url,
