@@ -4,6 +4,7 @@ import re
 
 ROOT = Path(__file__).resolve().parents[2]
 CI = ROOT / ".github/workflows/ci.yml"
+PUBLISH = ROOT / ".github/workflows/publish.yml"
 SMOKE = ROOT / ".github/workflows/updater-ci-dispatch-smoke.yml"
 JANITOR = ROOT / ".github/workflows/updater-ci-dispatch-smoke-cleanup.yml"
 README = ROOT / "README.md"
@@ -34,6 +35,14 @@ def test_ci_preserves_baseline_checks_and_commands() -> None:
         "node scripts/verify-package.mjs",
     ):
         assert command in text
+
+
+def test_publish_grants_reusable_ci_required_caller_permissions() -> None:
+    text = workflow_text(PUBLISH)
+    top_level_permissions = text.split("permissions:", 1)[1].split("jobs:", 1)[0]
+
+    assert "contents: read" in top_level_permissions
+    assert "pull-requests: read" in top_level_permissions
 
 
 def test_ci_dispatch_is_smoke_only_exact_head_bound_and_fail_closed() -> None:

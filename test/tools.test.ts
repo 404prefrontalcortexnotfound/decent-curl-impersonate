@@ -480,7 +480,7 @@ describe("extension lifecycle and commands", () => {
     }
   });
 
-  test("default status version matches the 0.2.0 package version", async () => {
+  test("default status version matches the 0.2.1 package version", async () => {
     const packageMetadata = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
     const commands = new Map<string, any>();
     const notifications: any[] = [];
@@ -504,7 +504,7 @@ describe("extension lifecycle and commands", () => {
     await commands.get("decent-curl-status").handler("", {
       ui: { notify: (...args: unknown[]) => notifications.push(args) },
     });
-    expect(packageMetadata.version).toBe("0.2.0");
+    expect(packageMetadata.version).toBe("0.2.1");
     expect(notifications.flat().join(" ")).toContain(`decent-curl-impersonate ${packageMetadata.version}`);
   });
 
