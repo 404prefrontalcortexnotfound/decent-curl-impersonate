@@ -37,12 +37,85 @@ def test_ci_preserves_baseline_checks_and_commands() -> None:
         assert command in text
 
 
-def test_publish_grants_reusable_ci_required_caller_permissions() -> None:
-    text = workflow_text(PUBLISH)
-    top_level_permissions = text.split("permissions:", 1)[1].split("jobs:", 1)[0]
+def permission_blocks(text: str) -> list[dict[str, str]]:
+    lines = text.splitlines()
+    blocks: list[dict[str, str]] = []
 
-    assert "contents: read" in top_level_permissions
-    assert "pull-requests: read" in top_level_permissions
+    for index, line in enumerate(lines):
+        match = re.match(r"^(\s*)permissions:\s*$", line)
+        if match is None:
+            continue
+
+        indent = len(match.group(1))
+        block: dict[str, str] = {}
+        for entry in lines[index + 1 :]:
+            if not entry.strip() or entry.lstrip().startswith("#"):
+                continue
+            entry_indent = len(entry) - len(entry.lstrip())
+            if entry_indent <= indent:
+                break
+            permission = re.match(
+                rf"^\s{{{indent + 2}}}([a-z-]+):\s*(read|write)\s*$", entry
+            )
+            if permission is not None:
+                block[permission.group(1)] = permission.group(2)
+        blocks.append(block)
+
+    return blocks
+
+
+def job_text(text: str, job_name: str) -> str:
+    jobs_text = text.split("\njobs:\n", 1)[1]
+    match = re.search(
+        rf"^  {re.escape(job_name)}:\s*$\n(?P<body>.*?)(?=^  [a-zA-Z0-9_-]+:\s*$|\Z)",
+        jobs_text,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None, job_name
+    return match.group(0)
+
+
+def declared_permissions(text: str) -> dict[str, str]:
+    blocks = permission_blocks(text)
+    assert len(blocks) <= 1, blocks
+    return blocks[0] if blocks else {}
+
+
+def merged_permissions(*permission_sets: dict[str, str]) -> dict[str, str]:
+    levels = {"read": 1, "write": 2}
+    merged: dict[str, str] = {}
+    for permissions in permission_sets:
+        for scope, level in permissions.items():
+            if scope not in merged or levels[level] > levels[merged[scope]]:
+                merged[scope] = level
+    return merged
+
+
+def test_publish_grants_reusable_ci_required_caller_permissions() -> None:
+    ci_required = merged_permissions(*permission_blocks(workflow_text(CI)))
+    publish_text = workflow_text(PUBLISH)
+    workflow_grants = declared_permissions(publish_text.split("\njobs:\n", 1)[0])
+    test_job_grants = declared_permissions(job_text(publish_text, "test"))
+    caller_grants = merged_permissions(workflow_grants, test_job_grants)
+    levels = {"read": 1, "write": 2}
+    insufficient = {
+        scope: required_level
+        for scope, required_level in ci_required.items()
+        if scope not in caller_grants
+        or levels[caller_grants[scope]] < levels[required_level]
+    }
+
+    assert ci_required
+    assert not insufficient, insufficient
+    assert workflow_grants == {"contents": "read"}
+    assert test_job_grants["contents"] == "read"
+    assert test_job_grants["pull-requests"] == "read"
+
+    publish_job_grants = declared_permissions(job_text(publish_text, "publish"))
+    assert publish_job_grants["contents"] == "read"
+    assert publish_job_grants["id-token"] == "write"
+    assert "pull-requests" not in publish_job_grants
+    assert "pull-requests" not in workflow_grants
 
 
 def test_ci_dispatch_is_smoke_only_exact_head_bound_and_fail_closed() -> None:
@@ -78,13 +151,17 @@ def test_ci_dispatch_is_smoke_only_exact_head_bound_and_fail_closed() -> None:
     assert "cmp --silent" in text
 
 
-def test_touched_ci_actions_are_immutable() -> None:
-    text = workflow_text(CI)
-    uses = re.findall(r"^\s*- uses:\s*([^\s#]+)", text, flags=re.MULTILINE)
+def test_ci_and_publish_actions_are_immutable() -> None:
+    for workflow in (CI, PUBLISH):
+        uses = re.findall(
+            r"^\s*- uses:\s*([^\s#]+)",
+            workflow_text(workflow),
+            flags=re.MULTILINE,
+        )
 
-    assert uses
-    for action in uses:
-        assert re.search(r"@[0-9a-f]{40}$", action), action
+        assert uses, workflow
+        for action in uses:
+            assert re.search(r"@[0-9a-f]{40}$", action), action
 
 
 def test_smoke_is_manual_exact_head_and_always_cleans_up() -> None:
