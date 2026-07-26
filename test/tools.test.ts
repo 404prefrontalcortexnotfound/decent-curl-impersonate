@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { readFile, rm, stat } from "node:fs/promises";
-import { dirname, isAbsolute } from "node:path";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 
@@ -119,6 +120,24 @@ describe("compact Pi gateway contract", () => {
     expect((result as any).details.errors.length).toBeGreaterThan(0);
   });
 
+  test("names operation-specific unexpected fields without exposing their values", async () => {
+    const worker = new RecordingWorker();
+    const result = await execute(createToolDefinition(worker), "websocket.send", {
+      websocket_id: "socket-1",
+      message: "hello",
+      code: 4321,
+      reason: "SECRET_REASON",
+    });
+
+    expect(worker.calls).toHaveLength(0);
+    expect((result as any).details.errors).toEqual([{
+      path: "/args",
+      message: "unexpected fields for this operation: code, reason",
+    }]);
+    expect(JSON.stringify(result)).not.toContain("4321");
+    expect(JSON.stringify(result)).not.toContain("SECRET_REASON");
+  });
+
   test("validation errors contain only path and message and never rejected values", async () => {
     const worker = new RecordingWorker();
     const result = await execute(createToolDefinition(worker), "request", {
@@ -158,10 +177,8 @@ describe("compact Pi gateway contract", () => {
     const tool = createToolDefinition(new RecordingWorker());
     const openai = promptBytes(tool, "openai");
     const anthropic = promptBytes(tool, "anthropic");
-    const old = { openai: 8178, anthropic: 4705 };
-    const message = `old=${JSON.stringify(old)} new=${JSON.stringify({ openai, anthropic })}`;
-
-    expect(Math.max(openai, anthropic), message).toBeLessThanOrEqual(2_500);
+    expect(openai).toBeLessThanOrEqual(2_500);
+    expect(anthropic).toBeLessThanOrEqual(2_500);
   });
 
   test("tracked distribution registers only the compact model-facing name", async () => {
@@ -379,7 +396,12 @@ describe("extension lifecycle and commands", () => {
       on(name: string, handler: any) { events.set(name, handler); },
     } as any;
 
-    registerDecentCurlExtension(pi, { worker, packageRoot: "/package", pythonCommand: "/package/.venv/bin/python" });
+    registerDecentCurlExtension(pi, {
+      worker,
+      packageRoot: "/package",
+      pythonCommand: "/package/.venv/bin/python",
+      packageVersion: "0.2.0-test",
+    });
 
     expect(tools).toHaveLength(1);
     expect(tools[0].name).toBe("decent_curl");
@@ -404,6 +426,7 @@ describe("extension lifecycle and commands", () => {
       worker: { call: async () => ({}), stop: async () => {} },
       packageRoot: "/package root",
       pythonCommand: "/package root/.venv/bin/python",
+      packageVersion: "0.2.0-test",
       runVisible: async (command, args, cwd) => { invocations.push({ command, args, cwd }); },
     });
 
@@ -418,6 +441,45 @@ describe("extension lifecycle and commands", () => {
     expect(notifications.flat().join(" ")).toContain("complete");
   });
 
+  test("reads and validates the status version from the selected package root", async () => {
+    const packageRoot = await mkdtemp(join(tmpdir(), "decent-curl-package-"));
+    const commands = new Map<string, any>();
+    const notifications: any[] = [];
+    const pi = {
+      registerTool() {},
+      registerCommand(name: string, command: any) { commands.set(name, command); },
+      on() {},
+    } as any;
+
+    try {
+      await writeFile(join(packageRoot, "package.json"), JSON.stringify({ version: "9.8.7-test.1" }));
+      registerDecentCurlExtension(pi, {
+        worker: { call: async () => ({}), stop: async () => {} },
+        packageRoot,
+        pythonCommand: join(packageRoot, ".venv/bin/python"),
+        runCapture: async () => JSON.stringify({
+          python: "3.13.5",
+          curl_cffi: "0.15.0",
+          libcurl: "libcurl/8.15.0",
+          profile_count: 27,
+        }),
+      });
+
+      await commands.get("decent-curl-status").handler("", {
+        ui: { notify: (...args: unknown[]) => notifications.push(args) },
+      });
+      expect(notifications.flat().join(" ")).toContain("decent-curl-impersonate 9.8.7-test.1");
+
+      await writeFile(join(packageRoot, "package.json"), JSON.stringify({ version: 987 }));
+      expect(() => registerDecentCurlExtension(pi, {
+        worker: { call: async () => ({}), stop: async () => {} },
+        packageRoot,
+      })).toThrow("Invalid package version");
+    } finally {
+      await rm(packageRoot, { recursive: true, force: true });
+    }
+  });
+
   test("default status version matches the 0.2.0 package version", async () => {
     const packageMetadata = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
     const commands = new Map<string, any>();
@@ -429,7 +491,7 @@ describe("extension lifecycle and commands", () => {
     } as any;
     registerDecentCurlExtension(pi, {
       worker: { call: async () => ({}), stop: async () => {} },
-      packageRoot: "/package",
+      packageRoot: resolve(import.meta.dir, ".."),
       pythonCommand: "/package/.venv/bin/python",
       runCapture: async () => JSON.stringify({
         python: "3.13.5",

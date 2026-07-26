@@ -22,7 +22,7 @@ Every known operation executes in one tool call. The description includes the no
 The TypeScript gateway becomes the security and validation boundary. Pi currently passes extension arguments to `execute` without enforcing the registered TypeBox schema, so this change must prove that validation does not narrow any input accepted by the Python worker contract.
 
 - Existing TypeBox schemas remain authoritative for request, download, session, WebSocket, and profile inputs.
-- `RequestParameters` becomes one flat object with `additionalProperties: false`; gateway code separately enforces that at most one of `json`, `form`, `content`, and `multipart` is present.
+- `RequestParameters` becomes one flat object with `additionalProperties: false`; gateway code separately enforces that at most one of `json`, `form`, `content`, `content_base64`, and `multipart` is present.
 - The gateway reconstructs the existing finite `action` value for session, WebSocket, and profile operations before validating against those schemas.
 - Runtime validation uses `Value` from `typebox/value`, matching the package that creates the schemas.
 - Invalid input stops before worker dispatch and returns only `{path, message}` entries. Validation output never includes rejected values or the phrase `Received arguments`.

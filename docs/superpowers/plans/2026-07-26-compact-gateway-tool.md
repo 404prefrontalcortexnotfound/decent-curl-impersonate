@@ -78,7 +78,7 @@ Expected: FAIL because `createToolDefinition` and the gateway behavior do not ex
 
 - [ ] **Step 6: Flatten request validation**
 
-Replace `RequestParameters`' intersect/union with one object that has `additionalProperties: false` and optional `json`, `form`, `content`, and `multipart` fields. Gateway code, not TypeBox, enforces at most one body.
+Replace `RequestParameters`' intersect/union with one object that has `additionalProperties: false` and optional `json`, `form`, `content`, `content_base64`, and `multipart` fields. Gateway code, not TypeBox, enforces at most one body.
 
 - [ ] **Step 7: Run existing schema tests**
 

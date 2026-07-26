@@ -15,65 +15,9 @@ var __export = (target, all) => {
 
 // src/index.ts
 import { spawn as spawn2 } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { dirname as dirname2, resolve as resolve3 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
-// package.json
-var package_default = {
-  name: "decent-curl-impersonate",
-  version: "0.2.0",
-  description: "Browser-impersonated HTTP tools for Pi backed by curl_cffi",
-  type: "module",
-  license: "MIT",
-  author: "404prefrontalcortexnotfound",
-  repository: {
-    type: "git",
-    url: "git+https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate.git"
-  },
-  homepage: "https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate#readme",
-  bugs: {
-    url: "https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate/issues"
-  },
-  keywords: [
-    "pi-package",
-    "curl",
-    "http",
-    "browser-impersonation"
-  ],
-  files: [
-    "dist",
-    "python/decent_curl_impersonate/*.py",
-    "pyproject.toml",
-    "uv.lock",
-    "upstream",
-    "README.md",
-    "LICENSE",
-    "THIRD_PARTY_NOTICES.md"
-  ],
-  pi: {
-    extensions: [
-      "./dist/index.js"
-    ]
-  },
-  scripts: {
-    build: "bun build src/index.ts --outdir dist --target node --format esm --external @earendil-works/pi-coding-agent",
-    typecheck: "tsc --noEmit",
-    test: "bun test"
-  },
-  dependencies: {
-    "@sinclair/typebox": "^0.34.41"
-  },
-  devDependencies: {
-    "@earendil-works/pi-ai": "^0.80.10",
-    "@earendil-works/pi-coding-agent": "^0.80.10",
-    "@types/bun": "^1.3.0",
-    typebox: "1.1.38",
-    typescript: "^5.9.3"
-  },
-  engines: {
-    node: ">=22"
-  },
-  packageManager: "npm@11.16.0"
-};
 
 // src/worker-client.ts
 import { spawn } from "node:child_process";
@@ -14795,8 +14739,12 @@ function safeSchemaErrors(schema5, candidate, prefix = "") {
 }
 function operationErrors(operation, args, allowed, required5) {
   const errors4 = [];
-  if (Object.keys(args).some((key) => !allowed.includes(key))) {
-    errors4.push({ path: "/args", message: "contains a field not valid for this operation" });
+  const unexpected = Object.keys(args).filter((key) => !allowed.includes(key));
+  if (unexpected.length > 0) {
+    errors4.push({
+      path: "/args",
+      message: `unexpected fields for this operation: ${unexpected.join(", ")}`
+    });
   }
   for (const key of required5) {
     if (!(key in args) || args[key] === "")
@@ -14829,25 +14777,29 @@ async function renderResult(renderer, operation, result) {
   if (renderer === "response")
     return responseResult(result);
   if (renderer === "download") {
-    const details2 = pick3(result, ["path", "size", "content_type", "status", "url", "profile", "sha256"]);
-    sanitizeUrlMetadata(details2);
-    const path = typeof details2.path === "string" ? details2.path : "unknown path";
-    const size = typeof details2.size === "number" ? ` (${details2.size} bytes)` : "";
-    return { content: [{ type: "text", text: `Downloaded to ${path}${size}` }], details: details2 };
+    const details = pick3(result, ["path", "size", "content_type", "status", "url", "profile", "sha256"]);
+    sanitizeUrlMetadata(details);
+    const path = typeof details.path === "string" ? details.path : "unknown path";
+    const size = typeof details.size === "number" ? ` (${details.size} bytes)` : "";
+    return { content: [{ type: "text", text: `Downloaded to ${path}${size}` }], details };
   }
   if (renderer === "session") {
-    const details2 = sessionDetails(result);
-    return { content: [{ type: "text", text: JSON.stringify(details2, null, 2) }], details: details2 };
+    const details = sessionDetails(result);
+    return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
   }
   if (renderer === "websocket")
     return websocketResult(operation.split(".")[1], result);
-  const profiles = stringArray(result.profiles);
-  const families = stringArray(result.families);
-  const details = { profile_count: profiles.length, families };
-  return {
-    content: [{ type: "text", text: JSON.stringify({ profiles, families }, null, 2) }],
-    details
-  };
+  if (renderer === "profiles") {
+    const profiles = stringArray(result.profiles);
+    const families = stringArray(result.families);
+    const details = { profile_count: profiles.length, families };
+    return {
+      content: [{ type: "text", text: JSON.stringify({ profiles, families }, null, 2) }],
+      details
+    };
+  }
+  const _exhaustive = renderer;
+  throw new Error(`Unhandled result renderer: ${_exhaustive}`);
 }
 async function responseResult(result) {
   const details = pick3(result, [
@@ -14953,7 +14905,6 @@ function asRecord(value) {
 }
 
 // src/index.ts
-var PACKAGE_VERSION = package_default.version;
 var STATUS_SCRIPT = [
   "import json, platform",
   "import curl_cffi",
@@ -14970,7 +14921,7 @@ function registerDecentCurlExtension(pi, dependencies4 = {}) {
   const worker = dependencies4.worker ?? new WorkerClient({ cwd: packageRoot });
   const runVisible = dependencies4.runVisible ?? runCommandVisible;
   const runCapture = dependencies4.runCapture ?? runCommandCapture;
-  const packageVersion = dependencies4.packageVersion ?? PACKAGE_VERSION;
+  const packageVersion = dependencies4.packageVersion ?? readPackageVersion(packageRoot);
   pi.registerTool(createToolDefinition(worker));
   pi.registerCommand("decent-curl-setup", {
     description: "Create the frozen package-local Python 3.13 environment",
@@ -15015,6 +14966,22 @@ function registerDecentCurlExtension(pi, dependencies4 = {}) {
 }
 function decentCurlExtension(pi) {
   registerDecentCurlExtension(pi);
+}
+function readPackageVersion(packageRoot) {
+  let metadata;
+  try {
+    metadata = JSON.parse(readFileSync(resolve3(packageRoot, "package.json"), "utf8"));
+  } catch {
+    throw new Error("Invalid package metadata");
+  }
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    throw new Error("Invalid package metadata");
+  }
+  const version = metadata.version;
+  if (typeof version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new Error("Invalid package version");
+  }
+  return version;
 }
 function parseStatus(output) {
   const parsed = JSON.parse(output.trim());

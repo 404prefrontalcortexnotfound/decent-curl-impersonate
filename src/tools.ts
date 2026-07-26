@@ -185,8 +185,12 @@ function operationErrors(
   required: readonly string[],
 ): ValidationError[] {
   const errors: ValidationError[] = [];
-  if (Object.keys(args).some((key) => !allowed.includes(key))) {
-    errors.push({ path: "/args", message: "contains a field not valid for this operation" });
+  const unexpected = Object.keys(args).filter((key) => !allowed.includes(key));
+  if (unexpected.length > 0) {
+    errors.push({
+      path: "/args",
+      message: `unexpected fields for this operation: ${unexpected.join(", ")}`,
+    });
   }
   for (const key of required) {
     if (!(key in args) || args[key] === "") errors.push({ path: `/args/${key}`, message: "is required" });
@@ -233,14 +237,18 @@ async function renderResult(
     return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
   }
   if (renderer === "websocket") return websocketResult(operation.split(".")[1], result);
+  if (renderer === "profiles") {
+    const profiles = stringArray(result.profiles);
+    const families = stringArray(result.families);
+    const details = { profile_count: profiles.length, families };
+    return {
+      content: [{ type: "text", text: JSON.stringify({ profiles, families }, null, 2) }],
+      details,
+    };
+  }
 
-  const profiles = stringArray(result.profiles);
-  const families = stringArray(result.families);
-  const details = { profile_count: profiles.length, families };
-  return {
-    content: [{ type: "text", text: JSON.stringify({ profiles, families }, null, 2) }],
-    details,
-  };
+  const _exhaustive: never = renderer;
+  throw new Error(`Unhandled result renderer: ${_exhaustive}`);
 }
 
 async function responseResult(result: Record<string, unknown>): Promise<ToolResult> {

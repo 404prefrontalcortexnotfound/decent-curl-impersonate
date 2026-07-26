@@ -1,13 +1,12 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import packageMetadata from "../package.json" with { type: "json" };
 
 import { WorkerClient, resolvePythonCommand } from "./worker-client.js";
 import { createToolDefinition, type WorkerCaller } from "./tools.js";
 
-const PACKAGE_VERSION = packageMetadata.version;
 const STATUS_SCRIPT = [
   "import json, platform",
   "import curl_cffi",
@@ -42,7 +41,7 @@ export function registerDecentCurlExtension(
   const worker = dependencies.worker ?? new WorkerClient({ cwd: packageRoot });
   const runVisible = dependencies.runVisible ?? runCommandVisible;
   const runCapture = dependencies.runCapture ?? runCommandCapture;
-  const packageVersion = dependencies.packageVersion ?? PACKAGE_VERSION;
+  const packageVersion = dependencies.packageVersion ?? readPackageVersion(packageRoot);
 
   pi.registerTool(createToolDefinition(worker));
 
@@ -90,6 +89,23 @@ export function registerDecentCurlExtension(
 
 export default function decentCurlExtension(pi: ExtensionAPI): void {
   registerDecentCurlExtension(pi);
+}
+
+function readPackageVersion(packageRoot: string): string {
+  let metadata: unknown;
+  try {
+    metadata = JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8"));
+  } catch {
+    throw new Error("Invalid package metadata");
+  }
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    throw new Error("Invalid package metadata");
+  }
+  const version = (metadata as Record<string, unknown>).version;
+  if (typeof version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new Error("Invalid package version");
+  }
+  return version;
 }
 
 interface StatusResult {
