@@ -1,9 +1,18 @@
 {
   "name": "decent-curl-impersonate",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "Browser-impersonated HTTP tools for Pi backed by curl_cffi",
   "type": "module",
   "license": "MIT",
+  "author": "404prefrontalcortexnotfound",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate.git"
+  },
+  "homepage": "https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate#readme",
+  "bugs": {
+    "url": "https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate/issues"
+  },
   "keywords": [
     "pi-package",
     "curl",

@@ -48,11 +48,27 @@ if (lifecycleHooks.length) {
   throw new Error(`install/publication lifecycle hooks are forbidden: ${lifecycleHooks.join(", ")}`);
 }
 
+const expectedMetadata = {
+  author: "404prefrontalcortexnotfound",
+  repository: {
+    type: "git",
+    url: "git+https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate.git",
+  },
+  homepage: "https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate#readme",
+  bugs: {
+    url: "https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate/issues",
+  },
+};
+for (const [field, expected] of Object.entries(expectedMetadata)) {
+  if (JSON.stringify(packageJson[field]) !== JSON.stringify(expected)) {
+    throw new Error(`package metadata field ${field} is missing or incorrect`);
+  }
+}
+if (packageJson.author.includes("@")) throw new Error("package author must not be an email address");
+
 const forbidden = [
   { label: "developer home path", pattern: /(?:\/Users\/|[A-Za-z]:\\Users\\)/ },
   { label: "worktree path", pattern: /\.worktrees\// },
-  { label: "private development owner", pattern: /404prefrontalcortexnotfound/i },
-  { label: "private development repository", pattern: /github\.com\/[^"'\s]+\/decent-curl-impersonate(?:\.git)?/i },
 ];
 for (const path of files) {
   const content = await readFile(resolve(packageRoot, path));
@@ -63,4 +79,4 @@ for (const path of files) {
   }
 }
 
-console.log(`verified ${files.length} intended package files; no private paths, private repository URLs, tests, environments, or lifecycle hooks`);
+console.log(`verified ${files.length} intended package files; no private paths, tests, environments, or lifecycle hooks`);
