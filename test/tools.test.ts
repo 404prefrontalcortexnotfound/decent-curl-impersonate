@@ -170,6 +170,11 @@ describe("compact Pi gateway contract", () => {
       "multipart",
       "allow_redirects",
       "mutually exclusive",
+      "non-browser tls/http2 fingerprint",
+      "cloudflare/waf interstitials",
+      "cf_clearance",
+      "javascript is not executed",
+      "real browser tool",
     ]) expect(description).toContain(phrase);
   });
 
@@ -204,6 +209,8 @@ describe("operation schemas and preserved worker inputs", () => {
       json: {},
       content: "raw",
     })).toBe(true);
+    expect((RequestParameters as any).properties.profile.description).toContain("non-browser TLS/HTTP2 fingerprint");
+    expect((RequestParameters as any).properties.session_id.description).toContain("cf_clearance");
   });
 
   test("accepts all documented request and download shapes", async () => {
@@ -329,6 +336,17 @@ describe("gateway result shaping and privacy", () => {
     expect(result.content).toEqual([{ type: "text", text: "response text" }]);
     expect(JSON.stringify(result.details)).not.toContain("secret");
     expect(result.details).toMatchObject({ status: 200, profile: "chrome" });
+  });
+
+  test("returns a machine-visible warning when no browser profile was used", async () => {
+    const worker = new RecordingWorker();
+    worker.result = { body: "challenge page", status: 403, profile: null };
+
+    const result = await execute(createToolDefinition(worker), "request", { url: "https://example.test" });
+
+    expect(result.content[0].text).toContain("Warning: request used no browser profile");
+    expect(result.content[0].text).toContain("challenge page");
+    expect(result.details.warning).toContain("non-browser TLS/HTTP2 fingerprint");
   });
 
   test("sanitizes request and download result URLs", async () => {

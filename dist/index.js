@@ -14524,7 +14524,7 @@ var RequestOptions = {
   query: exports_typebox.Optional(Query),
   headers: exports_typebox.Optional(SensitiveHeaders),
   auth: exports_typebox.Optional(Authentication),
-  profile: exports_typebox.Optional(exports_typebox.String({ description: "Installed curl_cffi browser profile." })),
+  profile: exports_typebox.Optional(exports_typebox.String({ description: "Set for browser-shaped requests; omitting it uses a non-browser TLS/HTTP2 fingerprint that commonly triggers Cloudflare/WAF interstitials." })),
   http_version: exports_typebox.Optional(StringEnum(["auto", "1.1", "2", "3"], {
     description: "HTTP protocol preference.",
     default: "auto"
@@ -14537,7 +14537,7 @@ var RequestOptions = {
   timeout: exports_typebox.Optional(exports_typebox.Number({ minimum: 0 })),
   retries: exports_typebox.Optional(exports_typebox.Integer({ minimum: 0 })),
   verify: exports_typebox.Optional(exports_typebox.Boolean({ description: "Whether to verify TLS certificates." })),
-  session_id: exports_typebox.Optional(exports_typebox.String())
+  session_id: exports_typebox.Optional(exports_typebox.String({ description: "Use an ID from session.create to persist cookies (including cf_clearance) across requests." }))
 };
 var RequestParameters = exports_typebox.Object({
   ...RequestOptions,
@@ -14694,8 +14694,10 @@ var OPERATION_TABLE = {
   }
 };
 var VALID_OPERATIONS = Object.keys(OPERATION_TABLE);
+var NON_BROWSER_WARNING = "Warning: request used no browser profile and had a non-browser TLS/HTTP2 fingerprint; Cloudflare/WAF may return an interstitial.";
 var GATEWAY_DESCRIPTION = [
   "Browser-impersonated HTTP gateway. Select operation and put its fields in args.",
+  "Set profile for browser-shaped requests; omitting it uses a non-browser TLS/HTTP2 fingerprint that commonly triggers Cloudflare/WAF interstitials. A session_id from session.create persists cookies, including cf_clearance, across requests. JavaScript is not executed; genuine interactive Turnstile challenges require a real browser tool.",
   "Operations: request (url required; method/query/headers/auth/profile/http_version/proxy/allow_redirects/max_redirects/timeout/retries/verify/session_id; one mutually exclusive body: json, form, content, content_base64, or multipart), download (url plus request transport fields/path/overwrite), session.create/list/close, websocket.connect/send/receive/close, profiles.list, profiles.fingerprint.",
   "Authentication: {type:'basic',username,password} or {type:'bearer',token}. Multipart parts are {path,filename?,content_type?} files or {value,content_type?} values. allow_redirects may be true, false, or 'safe'. WebSocket send uses exactly one of message or data_base64.",
   "Headers, authentication, proxies, query values, request bodies, upload content, and outbound WebSocket messages may contain secrets: never disclose them."
@@ -14824,6 +14826,12 @@ async function responseResult(result) {
     maxLines: DEFAULT_MAX_LINES
   });
   let text = truncation.content;
+  if (result.profile === null) {
+    details.warning = NON_BROWSER_WARNING;
+    text = `${NON_BROWSER_WARNING}
+
+${text}`;
+  }
   if (truncation.truncated) {
     const directory = await mkdtemp(join(tmpdir(), "decent-curl-response-"));
     await chmod(directory, 448);

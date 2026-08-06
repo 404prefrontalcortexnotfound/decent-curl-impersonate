@@ -39,7 +39,7 @@ const RequestOptions = {
   query: Type.Optional(Query),
   headers: Type.Optional(SensitiveHeaders),
   auth: Type.Optional(Authentication),
-  profile: Type.Optional(Type.String({ description: "Installed curl_cffi browser profile." })),
+  profile: Type.Optional(Type.String({ description: "Set for browser-shaped requests; omitting it uses a non-browser TLS/HTTP2 fingerprint that commonly triggers Cloudflare/WAF interstitials." })),
   http_version: Type.Optional(StringEnum(["auto", "1.1", "2", "3"] as const, {
     description: "HTTP protocol preference.",
     default: "auto",
@@ -52,7 +52,7 @@ const RequestOptions = {
   timeout: Type.Optional(Type.Number({ minimum: 0 })),
   retries: Type.Optional(Type.Integer({ minimum: 0 })),
   verify: Type.Optional(Type.Boolean({ description: "Whether to verify TLS certificates." })),
-  session_id: Type.Optional(Type.String()),
+  session_id: Type.Optional(Type.String({ description: "Use an ID from session.create to persist cookies (including cf_clearance) across requests." })),
 };
 
 export const RequestParameters = Type.Object({
