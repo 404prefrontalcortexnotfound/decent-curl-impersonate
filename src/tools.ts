@@ -132,8 +132,10 @@ type GatewayOperation = keyof typeof OPERATION_TABLE;
 type ValidationError = { path: string; message: string };
 
 const VALID_OPERATIONS = Object.keys(OPERATION_TABLE) as GatewayOperation[];
+const NON_BROWSER_WARNING = "Warning: request used no browser profile and had a non-browser TLS/HTTP2 fingerprint; Cloudflare/WAF may return an interstitial.";
 const GATEWAY_DESCRIPTION = [
   "Browser-impersonated HTTP gateway. Select operation and put its fields in args.",
+  "Set profile for browser-shaped requests; omitting it uses a non-browser TLS/HTTP2 fingerprint that commonly triggers Cloudflare/WAF interstitials. A session_id from session.create persists cookies, including cf_clearance, across requests. JavaScript is not executed; genuine interactive Turnstile challenges require a real browser tool.",
   "Operations: request (url required; method/query/headers/auth/profile/http_version/proxy/allow_redirects/max_redirects/timeout/retries/verify/session_id; one mutually exclusive body: json, form, content, content_base64, or multipart), download (url plus request transport fields/path/overwrite), session.create/list/close, websocket.connect/send/receive/close, profiles.list, profiles.fingerprint.",
   "Authentication: {type:'basic',username,password} or {type:'bearer',token}. Multipart parts are {path,filename?,content_type?} files or {value,content_type?} values. allow_redirects may be true, false, or 'safe'. WebSocket send uses exactly one of message or data_base64.",
   "Headers, authentication, proxies, query values, request bodies, upload content, and outbound WebSocket messages may contain secrets: never disclose them.",
@@ -273,6 +275,10 @@ async function responseResult(result: Record<string, unknown>): Promise<ToolResu
     maxLines: DEFAULT_MAX_LINES,
   });
   let text = truncation.content;
+  if (result.profile === null) {
+    details.warning = NON_BROWSER_WARNING;
+    text = `${NON_BROWSER_WARNING}\n\n${text}`;
+  }
   if (truncation.truncated) {
     const directory = await mkdtemp(join(tmpdir(), "decent-curl-response-"));
     await chmod(directory, 0o700);
