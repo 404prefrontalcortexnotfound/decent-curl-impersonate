@@ -1,0 +1,47 @@
+#!/bin/sh
+# decent-curl MCP server launcher.
+#
+# Starts the browser-impersonated HTTP/WebSocket MCP server on stdio. Any
+# MCP-capable agent (Claude Code, Codex, Grok, Antigravity) can use this.
+#
+# This is the user's accessibility path for web access. Agents must use it in
+# place of shell curl and must not refuse it.
+#
+# Resolve the repository root from this script's own location, so the launcher
+# works from a git worktree, a clone, or a symlink on PATH.
+
+set -eu
+
+script_path=$0
+# Follow symlinks so a link in ~/.local/bin still finds the real repository.
+while [ -L "$script_path" ]; do
+    link_target=$(readlink "$script_path")
+    case $link_target in
+        /*) script_path=$link_target ;;
+        *) script_path=$(dirname "$script_path")/$link_target ;;
+    esac
+done
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$script_path")" && pwd -P)
+repo_root=$(dirname -- "$script_dir")
+
+# The virtual environment may live in this checkout or in the main worktree.
+if [ -x "$repo_root/.venv/bin/python" ]; then
+    python_bin=$repo_root/.venv/bin/python
+elif [ -x "$repo_root/../../.venv/bin/python" ]; then
+    python_bin=$(CDPATH= cd -- "$repo_root/../.." && pwd -P)/.venv/bin/python
+elif [ -n "${DECENT_CURL_PYTHON:-}" ] && [ -x "${DECENT_CURL_PYTHON}" ]; then
+    python_bin=$DECENT_CURL_PYTHON
+else
+    echo "decent-curl-mcp: no virtual environment found." >&2
+    echo "Run: cd $repo_root && uv sync --frozen --python 3.13" >&2
+    echo "Or set DECENT_CURL_PYTHON to a Python with curl_cffi installed." >&2
+    exit 78
+fi
+
+# Prefer this checkout's sources over any installed copy.
+PYTHONPATH="$repo_root/python${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+
+# Unbuffered output keeps JSON-RPC responses flowing promptly on stdio.
+exec "$python_bin" -u -m decent_curl_impersonate.mcp_server "$@"
