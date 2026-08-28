@@ -30,6 +30,16 @@ async def one(operation: str, params: dict) -> dict:
         await engine.close()
 
 
+async def wait_for_active_websocket_use(
+    engine: CurlEngine, websocket_id: str
+) -> None:
+    async def wait_until_active() -> None:
+        while engine._websockets[websocket_id].active_uses == 0:
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(wait_until_active(), timeout=1)
+
+
 def test_profiles_are_discovered_from_installed_curl_cffi() -> None:
     result = run(one("profiles.list", {}))
 
@@ -663,6 +673,131 @@ def test_websocket_send_error_evicts_handle_and_respects_session_ownership(
                     }
             finally:
                 await engine.close()
+
+    run(scenario())
+
+
+def test_websocket_close_unblocks_an_active_receive_with_custom_close_data() -> None:
+    async def scenario() -> None:
+        peer_closed = asyncio.Event()
+        peer_close: dict[str, object] = {}
+
+        async def quiet(websocket: object) -> None:
+            await websocket.wait_closed()  # type: ignore[attr-defined]
+            peer_close["code"] = websocket.close_code  # type: ignore[attr-defined]
+            peer_close["reason"] = websocket.close_reason  # type: ignore[attr-defined]
+            peer_closed.set()
+
+        async with serve(quiet, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            engine = CurlEngine()
+            connected = await engine.dispatch(
+                "websocket.connect", {"url": f"ws://127.0.0.1:{port}/quiet"}
+            )
+            websocket_id = connected["websocket_id"]
+            receive = asyncio.create_task(
+                engine.dispatch("websocket.receive", {"websocket_id": websocket_id})
+            )
+            await wait_for_active_websocket_use(engine, websocket_id)
+
+            closed = await asyncio.wait_for(
+                engine.dispatch(
+                    "websocket.close",
+                    {
+                        "websocket_id": websocket_id,
+                        "code": 4001,
+                        "reason": "retiring",
+                    },
+                ),
+                timeout=1,
+            )
+
+            assert closed == {"websocket_id": websocket_id, "closed": True}
+            with pytest.raises(EngineError) as receive_error:
+                await asyncio.wait_for(receive, timeout=1)
+            assert receive_error.value.code == "network_error"
+            await asyncio.wait_for(peer_closed.wait(), timeout=1)
+            assert peer_close == {"code": 4001, "reason": "retiring"}
+            with pytest.raises(EngineError) as unknown:
+                await engine.dispatch(
+                    "websocket.receive", {"websocket_id": websocket_id}
+                )
+            assert unknown.value.code == "unknown_websocket"
+            await engine.close()
+
+    run(scenario())
+
+
+def test_engine_shutdown_unblocks_an_active_websocket_receive() -> None:
+    async def scenario() -> None:
+        async def quiet(websocket: object) -> None:
+            await websocket.wait_closed()  # type: ignore[attr-defined]
+
+        async with serve(quiet, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            engine = CurlEngine()
+            connected = await engine.dispatch(
+                "websocket.connect", {"url": f"ws://127.0.0.1:{port}/quiet"}
+            )
+            websocket_id = connected["websocket_id"]
+            receive = asyncio.create_task(
+                engine.dispatch("websocket.receive", {"websocket_id": websocket_id})
+            )
+            await wait_for_active_websocket_use(engine, websocket_id)
+
+            await asyncio.wait_for(engine.close(), timeout=1)
+
+            with pytest.raises(EngineError) as receive_error:
+                await asyncio.wait_for(receive, timeout=1)
+            assert receive_error.value.code == "network_error"
+            with pytest.raises(EngineError) as closed:
+                await engine.dispatch("profiles.list", {})
+            assert closed.value.code == "engine_closed"
+
+    run(scenario())
+
+
+def test_named_session_close_unblocks_an_attached_active_websocket_receive() -> None:
+    async def scenario() -> None:
+        async def quiet(websocket: object) -> None:
+            await websocket.wait_closed()  # type: ignore[attr-defined]
+
+        async with serve(quiet, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            engine = CurlEngine()
+            created = await engine.dispatch("session.create", {})
+            session_id = created["session_id"]
+            connected = await engine.dispatch(
+                "websocket.connect",
+                {
+                    "url": f"ws://127.0.0.1:{port}/quiet",
+                    "session_id": session_id,
+                },
+            )
+            websocket_id = connected["websocket_id"]
+            receive = asyncio.create_task(
+                engine.dispatch("websocket.receive", {"websocket_id": websocket_id})
+            )
+            await wait_for_active_websocket_use(engine, websocket_id)
+
+            closed = await asyncio.wait_for(
+                engine.dispatch("session.close", {"session_id": session_id}),
+                timeout=1,
+            )
+
+            assert closed == {"session_id": session_id, "closed": True}
+            with pytest.raises(EngineError) as receive_error:
+                await asyncio.wait_for(receive, timeout=1)
+            assert receive_error.value.code == "network_error"
+            with pytest.raises(EngineError) as unknown_websocket:
+                await engine.dispatch(
+                    "websocket.receive", {"websocket_id": websocket_id}
+                )
+            assert unknown_websocket.value.code == "unknown_websocket"
+            with pytest.raises(EngineError) as unknown_session:
+                await engine.dispatch("session.close", {"session_id": session_id})
+            assert unknown_session.value.code == "unknown_session"
+            await engine.close()
 
     run(scenario())
 

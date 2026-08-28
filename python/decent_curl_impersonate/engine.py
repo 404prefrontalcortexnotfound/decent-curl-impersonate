@@ -63,7 +63,8 @@ class _WebSocketHandle:
     active_uses: int = 0
     idle_event: asyncio.Event = field(default_factory=asyncio.Event)
     retired: bool = False
-    close_started: bool = False
+    close_task: asyncio.Task[None] | None = None
+    close_error: Exception | None = None
 
     def __post_init__(self) -> None:
         self.idle_event.set()
@@ -140,10 +141,10 @@ class CurlEngine:
             self._websockets.clear()
             for handle in websockets:
                 handle.retired = True
+                self._start_websocket_close(handle)
             sessions = list(self._sessions.values())
             self._sessions.clear()
         for handle in websockets:
-            await handle.idle_event.wait()
             await self._close_websocket_once(handle)
         for named in sessions:
             await named.idle_event.wait()
@@ -160,6 +161,7 @@ class CurlEngine:
                 if handle.active_uses == 0 and handle.last_used <= deadline:
                     self._websockets.pop(websocket_id)
                     handle.retired = True
+                    self._start_websocket_close(handle)
                     websockets.append(handle)
 
             websocket_sessions = {
@@ -240,9 +242,9 @@ class CurlEngine:
                 if handle.session_id == session_id:
                     self._websockets.pop(websocket_id)
                     handle.retired = True
+                    self._start_websocket_close(handle)
                     websockets.append(handle)
         for handle in websockets:
-            await handle.idle_event.wait()
             await self._close_websocket_once(handle)
         await named.idle_event.wait()
         await named.session.close()
@@ -430,27 +432,56 @@ class CurlEngine:
             if handle is None:
                 raise EngineError("unknown_websocket", "Unknown WebSocket ID")
             handle.retired = True
-            handle.close_started = True
-        await handle.idle_event.wait()
+            close_task = self._start_websocket_close(
+                handle, code=code, message=reason.encode("utf-8")
+            )
         try:
-            await handle.websocket.close(code=code, message=reason.encode("utf-8"))
+            await self._wait_for_websocket_close(handle, close_task)
         except WebSocketError as error:
             raise self._network_error(error) from None
-        finally:
-            if handle.close_session:
-                await handle.session.close()
         return {"websocket_id": websocket_id, "closed": True}
 
     async def _close_websocket_once(self, handle: _WebSocketHandle) -> None:
         async with self._state_lock:
-            if handle.close_started:
-                return
-            handle.close_started = True
+            close_task = self._start_websocket_close(handle)
+        await self._wait_for_websocket_close(handle, close_task)
+
+    def _start_websocket_close(
+        self,
+        handle: _WebSocketHandle,
+        *,
+        code: int = 1000,
+        message: bytes = b"",
+    ) -> asyncio.Task[None]:
+        if handle.close_task is None:
+            handle.close_task = asyncio.create_task(
+                self._finish_websocket_close(handle, code=code, message=message)
+            )
+        return handle.close_task
+
+    async def _finish_websocket_close(
+        self, handle: _WebSocketHandle, *, code: int, message: bytes
+    ) -> None:
         try:
-            await handle.websocket.close()
+            await handle.websocket.close(code=code, message=message)
+        except Exception as error:
+            handle.close_error = error
         finally:
-            if handle.close_session:
-                await handle.session.close()
+            try:
+                await handle.idle_event.wait()
+                if handle.close_session:
+                    await handle.session.close()
+            except Exception as error:
+                if handle.close_error is None:
+                    handle.close_error = error
+
+    @staticmethod
+    async def _wait_for_websocket_close(
+        handle: _WebSocketHandle, close_task: asyncio.Task[None]
+    ) -> None:
+        await asyncio.shield(close_task)
+        if handle.close_error is not None:
+            raise handle.close_error
 
     async def _retire_terminal_websocket(
         self, websocket_id: str, handle: _WebSocketHandle
