@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from contextlib import asynccontextmanager
 from logging import Logger
 from logging.handlers import RotatingFileHandler
 import logging
@@ -13,6 +11,7 @@ import sys
 from typing import Any
 
 import mcp.types as types
+from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel import Server
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -28,11 +27,12 @@ from .mcp_server import (
     _call_tool,
     _public_tools,
 )
+from .service_settings import DEFAULT_PORT, HOST, settings_from_environment
 
-HOST = "127.0.0.1"
-DEFAULT_PORT = 8765
 DEFAULT_LOG_BYTES = 5 * 1024 * 1024
 DEFAULT_LOG_BACKUPS = 3
+DEFAULT_SESSION_IDLE_SECONDS = 30 * 60
+_ENGINE_STATE_KEY = "decent_curl.engine"
 
 
 def configure_logging(
@@ -73,17 +73,21 @@ def configure_logging(
     return logger
 
 
-def create_app() -> Starlette:
+def _connection_engine(ctx: ServerRequestContext[Any, Any]) -> CurlEngine:
+    """Return the engine owned by this MCP connection."""
+    connection = ctx.session._connection  # type: ignore[attr-defined]
+    engine = connection.state.get(_ENGINE_STATE_KEY)
+    if engine is None:
+        engine = CurlEngine()
+        connection.state[_ENGINE_STATE_KEY] = engine
+        connection.exit_stack.push_async_callback(engine.close)
+    return engine
+
+
+def create_app(
+    *, session_idle_timeout: float = DEFAULT_SESSION_IDLE_SECONDS
+) -> Starlette:
     """Build the official MCP Streamable HTTP ASGI application."""
-    engine = CurlEngine()
-
-    @asynccontextmanager
-    async def lifespan(_: Server[Any]):
-        try:
-            yield {}
-        finally:
-            await engine.close()
-
     async def list_tools(
         _: Any, __: types.PaginatedRequestParams | None
     ) -> types.ListToolsResult:
@@ -92,10 +96,10 @@ def create_app() -> Starlette:
         )
 
     async def call_tool(
-        _: Any, params: types.CallToolRequestParams
+        ctx: ServerRequestContext[Any, Any], params: types.CallToolRequestParams
     ) -> types.CallToolResult:
         result = await _call_tool(
-            engine,
+            _connection_engine(ctx),
             {"name": params.name, "arguments": params.arguments or {}},
         )
         return types.CallToolResult.model_validate(result)
@@ -107,35 +111,18 @@ def create_app() -> Starlette:
         SERVER_NAME,
         version=SERVER_VERSION,
         instructions=SERVER_INSTRUCTIONS,
-        lifespan=lifespan,
         on_list_tools=list_tools,
         on_call_tool=call_tool,
     )
-    return server.streamable_http_app(
+    app = server.streamable_http_app(
         streamable_http_path="/mcp",
         host=HOST,
         custom_starlette_routes=[Route("/healthz", health, methods=["GET"])],
     )
-
-
-def settings_from_environment(environment: Mapping[str, str]) -> tuple[str, int]:
-    """Read service settings while keeping the bind address loopback-only."""
-    requested_host = environment.get("DECENT_CURL_HTTP_HOST", HOST)
-    if requested_host != HOST:
-        raise ValueError(f"HTTP service host must be {HOST}")
-
-    raw_port = environment.get("DECENT_CURL_HTTP_PORT")
-    if raw_port is None:
-        return HOST, DEFAULT_PORT
-    try:
-        port = int(raw_port)
-    except ValueError:
-        raise ValueError(
-            "DECENT_CURL_HTTP_PORT must be an integer from 1 to 65535"
-        ) from None
-    if not 1 <= port <= 65535:
-        raise ValueError("DECENT_CURL_HTTP_PORT must be an integer from 1 to 65535")
-    return HOST, port
+    if session_idle_timeout <= 0:
+        raise ValueError("session_idle_timeout must be a positive number of seconds")
+    server.session_manager.session_idle_timeout = session_idle_timeout
+    return app
 
 
 def main() -> None:

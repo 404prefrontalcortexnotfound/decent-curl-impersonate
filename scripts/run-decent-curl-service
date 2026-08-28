@@ -18,9 +18,14 @@ mkdir -p "$log_dir"
 python_bin=$repository/.venv/bin/python
 
 if [ ! -x "$python_bin" ]; then
-    message="run-decent-curl-service: missing $python_bin. Run: cd $repository && uv sync --frozen --python 3.13"
-    printf '%s\n' "$message" > "$log_dir/startup.log"
-    printf '%s\n' "$message" >&2
+    missing_venv_message() {
+        printf '%s\n' \
+            "run-decent-curl-service: missing $python_bin." \
+            "Change directory to: $repository" \
+            "Run: uv sync --frozen --python 3.13"
+    }
+    missing_venv_message > "$log_dir/startup.log"
+    missing_venv_message >&2
     exit 78
 fi
 

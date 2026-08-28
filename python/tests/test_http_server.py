@@ -1,5 +1,6 @@
 import asyncio
 import base64
+from contextlib import contextmanager
 import json
 import logging
 import socket
@@ -22,15 +23,15 @@ from decent_curl_impersonate.http_server import (
 from decent_curl_impersonate.mcp_server import _public_tools
 
 
-@pytest.fixture
-def http_mcp_server_url() -> Iterator[str]:
+@contextmanager
+def _serve_mcp_app(app: object) -> Iterator[str]:
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind((HOST, 0))
     listener.listen(128)
     port = listener.getsockname()[1]
     server = uvicorn.Server(
-        uvicorn.Config(create_app(), log_config=None, lifespan="on")
+        uvicorn.Config(app, log_config=None, lifespan="on")
     )
     thread = threading.Thread(
         target=server.run,
@@ -52,6 +53,17 @@ def http_mcp_server_url() -> Iterator[str]:
         thread.join(timeout=5)
         listener.close()
         assert not thread.is_alive()
+
+
+@pytest.fixture
+def http_mcp_server_url() -> Iterator[str]:
+    with _serve_mcp_app(create_app()) as url:
+        yield url
+
+
+def _tool_json(result: object) -> dict[str, object]:
+    content = getattr(result, "content")
+    return json.loads(content[0].text)
 
 
 def test_http_settings_use_loopback_and_default_port() -> None:
@@ -169,3 +181,80 @@ def test_http_mcp_sends_binary_body_and_custom_headers(
             assert echoed["body"].encode() == payload
 
     asyncio.run(exercise())
+
+
+def test_http_mcp_reuses_named_sessions_within_one_client(
+    http_mcp_server_url: str,
+) -> None:
+    async def exercise() -> None:
+        async with Client(f"{http_mcp_server_url}/mcp", mode="legacy") as client:
+            created = _tool_json(
+                await client.call_tool("decent_curl_session_create", {})
+            )
+            listed = _tool_json(
+                await client.call_tool("decent_curl_session_list", {})
+            )
+            assert listed["sessions"] == [
+                {"session_id": created["session_id"], "profile": None}
+            ]
+
+    asyncio.run(exercise())
+
+
+def test_http_mcp_closes_engine_state_after_graceful_client_close(
+    http_mcp_server_url: str,
+) -> None:
+    async def exercise() -> None:
+        async with Client(f"{http_mcp_server_url}/mcp", mode="legacy") as client:
+            created = _tool_json(
+                await client.call_tool("decent_curl_session_create", {})
+            )
+
+        async with Client(f"{http_mcp_server_url}/mcp", mode="legacy") as client:
+            listed = _tool_json(
+                await client.call_tool("decent_curl_session_list", {})
+            )
+            assert created["session_id"] not in {
+                session["session_id"] for session in listed["sessions"]
+            }
+
+    asyncio.run(exercise())
+
+
+def test_http_mcp_configures_a_bounded_idle_timeout() -> None:
+    app = create_app()
+    manager = app.routes[0].endpoint.session_manager
+
+    assert manager.session_idle_timeout is not None
+    assert 0 < manager.session_idle_timeout <= 30 * 60
+
+
+def test_http_mcp_closes_engine_state_after_idle_timeout() -> None:
+    app = create_app()
+    manager = app.routes[0].endpoint.session_manager
+    manager.session_idle_timeout = 0.05
+
+    async def exercise(url: str) -> None:
+        client = Client(f"{url}/mcp", mode="legacy")
+        await client.__aenter__()
+        try:
+            created = _tool_json(
+                await client.call_tool("decent_curl_session_create", {})
+            )
+            await asyncio.sleep(0.15)
+
+            async with Client(f"{url}/mcp", mode="legacy") as replacement:
+                listed = _tool_json(
+                    await replacement.call_tool("decent_curl_session_list", {})
+                )
+                assert created["session_id"] not in {
+                    session["session_id"] for session in listed["sessions"]
+                }
+        finally:
+            try:
+                await client.__aexit__(None, None, None)
+            except Exception:
+                pass
+
+    with _serve_mcp_app(app) as url:
+        asyncio.run(exercise(url))

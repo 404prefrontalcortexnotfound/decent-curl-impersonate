@@ -8,20 +8,31 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
+
+from .service_settings import DEFAULT_PORT, service_urls, validate_port
 
 LABEL = "tech.decent.decent-curl"
 PLIST_NAME = f"{LABEL}.plist"
 
 
-def render_launch_agent(template_path: Path, repository: Path) -> str:
+def render_launch_agent(
+    template_path: Path, repository: Path, port: int = DEFAULT_PORT
+) -> str:
     """Render a LaunchAgent template for one resolved repository path."""
     resolved_repository = repository.resolve()
     template = template_path.read_text(encoding="utf-8")
     placeholder = "__REPOSITORY_ROOT__"
     if template.count(placeholder) < 2:
         raise ValueError(f"LaunchAgent template must contain {placeholder}")
-    return template.replace(placeholder, escape(str(resolved_repository), quote=True))
+    rendered = template.replace(
+        placeholder, escape(str(resolved_repository), quote=True)
+    )
+    port_placeholder = "__HTTP_PORT__"
+    if rendered.count(port_placeholder) != 1:
+        raise ValueError(f"LaunchAgent template must contain one {port_placeholder}")
+    return rendered.replace(port_placeholder, str(validate_port(port)))
 
 
 def _launchctl() -> str:
@@ -41,11 +52,17 @@ def _is_loaded(launchctl: str, service: str) -> bool:
     return result.returncode == 0
 
 
-def install_launch_agent(repository: Path, *, check_only: bool = False) -> int:
+def install_launch_agent(
+    repository: Path,
+    *,
+    port: int = DEFAULT_PORT,
+    check_only: bool = False,
+) -> int:
     """Install or check the user LaunchAgent for a resolved repository."""
     repository = repository.resolve()
     template = repository / "launchd" / f"{PLIST_NAME}.template"
-    rendered = render_launch_agent(template, repository)
+    port = validate_port(port)
+    rendered = render_launch_agent(template, repository, port)
     launch_agents = Path.home() / "Library" / "LaunchAgents"
     target = launch_agents / PLIST_NAME
     launchctl = _launchctl()
@@ -55,6 +72,9 @@ def install_launch_agent(repository: Path, *, check_only: bool = False) -> int:
     current = target.read_text(encoding="utf-8") if target.exists() else None
     loaded = _is_loaded(launchctl, service)
     if check_only:
+        mcp_url, health_url = service_urls(port)
+        print(f"Effective MCP URL: {mcp_url}")
+        print(f"Effective health URL: {health_url}")
         if current == rendered and loaded:
             print(f"{LABEL}: installed and loaded")
             return 0
@@ -92,8 +112,13 @@ def main() -> None:
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--check", action="store_true")
     arguments = parser.parse_args()
+    try:
+        port = validate_port(os.environ.get("DECENT_CURL_HTTP_PORT"))
+    except ValueError as error:
+        print(f"install-launch-agent: {error}", file=sys.stderr)
+        raise SystemExit(64) from None
     raise SystemExit(
-        install_launch_agent(arguments.repo, check_only=arguments.check)
+        install_launch_agent(arguments.repo, port=port, check_only=arguments.check)
     )
 
 

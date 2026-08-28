@@ -16,6 +16,8 @@
   <dict>
     <key>PYTHONUNBUFFERED</key>
     <string>1</string>
+    <key>DECENT_CURL_HTTP_PORT</key>
+    <string>__HTTP_PORT__</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>

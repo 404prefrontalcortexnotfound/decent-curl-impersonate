@@ -34,6 +34,8 @@ binds only to `127.0.0.1`. The default MCP URL is
 
 Set `DECENT_CURL_HTTP_PORT` to use a different port. The service rejects an
 invalid port and any attempt to select a non-loopback host.
+The installer writes the selected port into the LaunchAgent. The registration
+script derives its default MCP URL from the same port.
 
 Run these commands on each macOS machine after the checkout is at
 `$HOME/code/decent-curl-impersonate`:
@@ -47,14 +49,30 @@ uv sync --frozen --python 3.13
 
 The installer creates or updates the user LaunchAgent. It then uses
 `launchctl bootstrap` or `launchctl kickstart` as required. Run
-`./scripts/install-launch-agent --check` to check the installed service.
+`./scripts/install-launch-agent --check` to check the installed service. Check
+mode reports the effective MCP and health URLs.
+
+Export one port before both commands when port `8765` is unavailable:
+
+```sh
+export DECENT_CURL_HTTP_PORT=9123
+./scripts/install-launch-agent
+./scripts/register-mcp-service
+```
 
 The registration script adds the HTTP URL to Claude Code, Codex, and Grok at
-user scope. It uses each agent's MCP command, so unrelated configuration stays
-unchanged. Run `./scripts/register-mcp-service --dry-run` to preview the
-commands. Run `./scripts/register-mcp-service --check` to check all three
-registrations without changing them. Start new agent sessions after
+user scope. It saves all three configuration files before the update. It
+restores all three files if an agent command or the final check fails. Run
+`./scripts/register-mcp-service --dry-run` to preview the commands. Run
+`./scripts/register-mcp-service --check` to check all three registrations
+without changing them. Both modes report the effective MCP URL. Set
+`DECENT_CURL_MCP_URL` only when registration needs an explicit full URL that
+differs from the selected local port. Start new agent sessions after
 registration so they load the service.
+
+One MCP client reuses one `CurlEngine` across its tool calls. The service closes
+that engine after the client ends its MCP session. It also closes inactive
+client state after 30 minutes.
 
 Python service logs are in `~/Library/Logs/decent-curl/service.log`. The service
 rotates the log at 5 MiB and keeps three backups. A missing virtual environment
