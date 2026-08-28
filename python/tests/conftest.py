@@ -1,3 +1,4 @@
+import hashlib
 import json
 import time
 from collections.abc import Iterator
@@ -43,8 +44,16 @@ class FixtureHandler(BaseHTTPRequestHandler):
             "method": self.command,
             "query": parse_qs(parsed.query),
             "headers": {name.lower(): value for name, value in self.headers.items()},
-            "body": body.decode("utf-8"),
         }
+        if parsed.path == "/binary":
+            payload.update(
+                {
+                    "body_size": len(body),
+                    "body_sha256": hashlib.sha256(body).hexdigest(),
+                }
+            )
+        else:
+            payload["body"] = body.decode("utf-8")
         self._send(200, json.dumps(payload).encode())
 
     def do_GET(self) -> None:

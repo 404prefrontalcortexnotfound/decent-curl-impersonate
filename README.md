@@ -25,6 +25,80 @@ uv sync --frozen --python 3.13
 bun run build
 ```
 
+## Persistent local MCP service
+
+The source checkout includes a loopback-only MCP Streamable HTTP service. It
+binds only to `127.0.0.1`. The default MCP URL is
+`http://127.0.0.1:8765/mcp`, and the health URL is
+`http://127.0.0.1:8765/healthz`.
+The MCP endpoint accepts request bodies up to 32 MiB. Base64 content expands
+raw bytes by about one third, and the JSON-RPC envelope also uses this limit.
+
+Set `DECENT_CURL_HTTP_PORT` to use a different port. The service rejects an
+invalid port and any attempt to select a non-loopback host.
+The installer writes the selected port into the LaunchAgent. The registration
+script derives its default MCP URL from the same port.
+
+Run these commands on each macOS machine after the checkout is at
+`$HOME/code/decent-curl-impersonate`:
+
+```sh
+cd "$HOME/code/decent-curl-impersonate"
+uv sync --frozen --python 3.13
+./scripts/install-launch-agent
+./scripts/register-mcp-service
+```
+
+The installer creates or updates the user LaunchAgent. It then uses
+`launchctl bootstrap` or `launchctl kickstart` as required. Run
+`./scripts/install-launch-agent --check` to check the installed service. Check
+mode reports the effective MCP and health URLs.
+
+Export one port before both commands when port `8765` is unavailable:
+
+```sh
+export DECENT_CURL_HTTP_PORT=9123
+./scripts/install-launch-agent
+./scripts/register-mcp-service
+```
+
+The registration script adds the HTTP URL to Claude Code, Codex, and Grok at
+user scope. It saves all three configuration files before the update. It
+restores all three files if an agent command or the final check fails. Run
+`./scripts/register-mcp-service --dry-run` to preview the commands. Run
+`./scripts/register-mcp-service --check` to check all three registrations
+without changing them. Both modes report the effective MCP URL. Set
+`DECENT_CURL_MCP_URL` only when registration needs an explicit full URL that
+differs from the selected local port. Start new agent sessions after
+registration so they load the service.
+
+The HTTP daemon uses one `CurlEngine` for default modern and legacy MCP calls.
+Named session IDs and WebSocket IDs remain valid across calls. The daemon closes
+each resource after 30 minutes without activity. It does not close a resource
+while an operation uses it. Explicit close calls release idle resources
+immediately, and service shutdown closes all remaining resources. The official
+MCP transport manager has its own separate 30-minute idle limit.
+
+Python service logs are in `~/Library/Logs/decent-curl/service.log`. The service
+rotates the log at 5 MiB and keeps three backups. A missing virtual environment
+error is in `~/Library/Logs/decent-curl/startup.log`.
+
+The same commands are ready for Silverfin after the repository is present at
+the selected path. Run them on Silverfin through its shell. Do not copy a plist
+from another machine because the installer writes the resolved repository path.
+
+The stdio server remains available through `decent-curl-mcp` or:
+
+```sh
+python -m decent_curl_impersonate.mcp_server
+```
+
+Run the HTTP server in the foreground through `decent-curl-http` or:
+
+```sh
+python -m decent_curl_impersonate.http_server
+```
+
 ## Tool (version 0.2.2)
 
 The extension registers exactly one model-visible tool, `decent_curl`. Pass an `operation` and an optional `args` object:

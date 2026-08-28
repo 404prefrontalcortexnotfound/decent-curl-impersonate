@@ -1,0 +1,34 @@
+#!/bin/sh
+
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+repository=$(dirname -- "$script_dir")
+if [ "${1:-}" = "--repo" ]; then
+    if [ "$#" -lt 2 ]; then
+        echo "install-launch-agent: --repo needs a path" >&2
+        exit 64
+    fi
+    repository=$2
+    shift 2
+fi
+repository=$(CDPATH= cd -- "$repository" && pwd -P)
+log_dir=${DECENT_CURL_LOG_DIR:-"$HOME/Library/Logs/decent-curl"}
+mkdir -p "$log_dir"
+python_bin=$repository/.venv/bin/python
+
+if [ ! -x "$python_bin" ]; then
+    missing_venv_message() {
+        printf '%s\n' \
+            "install-launch-agent: missing $python_bin." \
+            "Change directory to: $repository" \
+            "Run: uv sync --frozen --python 3.13"
+    }
+    missing_venv_message > "$log_dir/startup.log"
+    missing_venv_message >&2
+    exit 78
+fi
+
+PYTHONPATH="$repository/python${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+exec "$python_bin" -m decent_curl_impersonate.launch_agent --repo "$repository" "$@"

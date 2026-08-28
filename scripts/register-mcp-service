@@ -1,0 +1,9 @@
+#!/bin/sh
+
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+repository=$(dirname -- "$script_dir")
+PYTHONPATH="$repository/python${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+exec "${DECENT_CURL_PYTHON:-python3}" -m decent_curl_impersonate.registration "$@"
