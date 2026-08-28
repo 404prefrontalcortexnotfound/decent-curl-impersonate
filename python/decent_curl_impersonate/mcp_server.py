@@ -52,7 +52,7 @@ _TOOLS: list[dict[str, Any]] = [
             "Make an HTTP request with a browser TLS/HTTP2 fingerprint. Use "
             "this instead of shell curl for any page fetch, API call, redirect "
             "check, or URL verification. Supply at most one body: json, form, "
-            "content, or multipart. " + _ACCESSIBILITY_NOTE
+            "content, content_base64, or multipart. " + _ACCESSIBILITY_NOTE
         ),
         "inputSchema": {
             "type": "object",
@@ -76,6 +76,10 @@ _TOOLS: list[dict[str, Any]] = [
                 "json": {"description": "JSON body. Mutually exclusive with other bodies."},
                 "form": {"type": "object", "description": "Form body."},
                 "content": {"type": "string", "description": "Raw text body."},
+                "content_base64": {
+                    "type": "string",
+                    "description": "Base64 binary body. Use for files and other non-text bytes.",
+                },
                 "multipart": {"type": "object", "description": "Multipart fields and files."},
                 "http_version": {
                     "type": "string",
