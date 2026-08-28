@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:37"
+      timezone: Australia/Sydney
+    target-branch: main
+    rebase-strategy: auto
+    open-pull-requests-limit: 1
+    allow:
+      - dependency-name: curl-cffi
+        dependency-type: direct
+    commit-message:
+      prefix: "deps(curl-cffi)"
+    labels:
+      - dependencies
+      - curl-cffi-updater

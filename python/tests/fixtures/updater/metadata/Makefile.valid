@@ -1,0 +1,4 @@
+.ONESHELL:
+SHELL := bash
+VERSION := 1.5.2
+CURL_VERSION := curl-8_15_0

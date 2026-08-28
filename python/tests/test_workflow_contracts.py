@@ -7,6 +7,8 @@ CI = ROOT / ".github/workflows/ci.yml"
 SMOKE = ROOT / ".github/workflows/updater-ci-dispatch-smoke.yml"
 JANITOR = ROOT / ".github/workflows/updater-ci-dispatch-smoke-cleanup.yml"
 README = ROOT / "README.md"
+COORDINATOR = ROOT / ".github/workflows/curl-cffi-updater.yml"
+DEPENDABOT = ROOT / ".github/dependabot.yml"
 
 
 def workflow_text(path: Path) -> str:
@@ -36,46 +38,126 @@ def test_ci_preserves_baseline_checks_and_commands() -> None:
         assert command in text
 
 
-def test_ci_dispatch_is_smoke_only_exact_head_bound_and_fail_closed() -> None:
+def test_ci_supports_smoke_and_production_exact_head_without_policy_dependency() -> None:
     text = workflow_text(CI)
 
     for dispatch_input in ("gate_id:", "pr_number:", "expected_head_sha:", "validation_mode:"):
         assert dispatch_input in text
     assert "run-name:" in text
-    assert "name: Updater policy" in text
-    assert "EXPECTED_HEAD_SHA" in text
-    assert "GITHUB_SHA" in text
-    assert "pulls/${PR_NUMBER}" in text
-    assert "automation/token-pr-${GATE_ID}" in text
-    assert "options:\n          - smoke" in text
-    assert '[[ "${VALIDATION_MODE}" == "smoke" ]]' in text
-
-    for future_stage_value in (
-        "- updater",
-        "automation/weekly-curl-cffi",
-        "pyproject.toml",
-        "upstream/curl_cffi.lock.json",
-        "upstream/curl_impersonate.lock.json",
-        "THIRD_PARTY_NOTICES.md",
-        "ALLOWED_PATHS",
+    assert "- smoke\n          - updater" in text
+    assert "Updater policy (coordinator pending)" in text
+    assert "github.actor == 'dependabot[bot]'" in text
+    assert "name: Test (${{ matrix.os }})" in text
+    test_prefix = text.split("  test:", 1)[1].split("    steps:", 1)[0]
+    assert "needs:" not in test_prefix
+    assert "scripts/updater_metadata.py verify-final" in text
+    for gate in (
+        "DECENT_CURL_LIVE_TESTS=1",
+        "npm audit --omit=dev --audit-level=low --json",
+        "pip-audit==2.10.1",
+        "uv sync --frozen --python 3.13 --no-dev",
+        "runtime-report",
+        "updater-evidence-${{ inputs.gate_id }}-${{ matrix.os }}",
     ):
-        assert future_stage_value not in text
-
-    assert '[[ "${changed_count}" -eq 1 ]]' in text
-    assert '.[0].filename' in text and '== "uv.lock"' in text
-    assert '.[0].status' in text and '== "modified"' in text
-    assert '.[0].additions' in text and '-eq 1' in text
-    assert '.[0].deletions' in text and '-eq 0' in text
-    assert "cmp --silent" in text
+        assert gate in text
+    assert "cmp --silent" in text  # Stage 1 remains through rollout.
 
 
-def test_touched_ci_actions_are_immutable() -> None:
-    text = workflow_text(CI)
+def test_touched_privileged_actions_are_immutable() -> None:
+    text = workflow_text(CI) + workflow_text(COORDINATOR)
     uses = re.findall(r"^\s*- uses:\s*([^\s#]+)", text, flags=re.MULTILINE)
 
     assert uses
     for action in uses:
         assert re.search(r"@[0-9a-f]{40}$", action), action
+
+
+def job_block(text: str, job: str) -> str:
+    start = text.index(f"  {job}:\n")
+    match = re.search(r"^  [a-zA-Z0-9_-]+:\n", text[start + 3 :], flags=re.MULTILINE)
+    return text[start:] if match is None else text[start : start + 3 + match.start()]
+
+
+def test_dependabot_is_uv_weekly_curl_cffi_only() -> None:
+    text = workflow_text(DEPENDABOT)
+    assert text.count("package-ecosystem:") == 1
+    assert "package-ecosystem: uv" in text
+    assert "interval: weekly" in text and "day: monday" in text
+    assert 'time: "06:37"' in text and "target-branch: main" in text
+    assert "rebase-strategy: auto" in text and "open-pull-requests-limit: 1" in text
+    assert text.count("dependency-name:") == 1
+    assert "dependency-name: curl-cffi" in text and "dependency-type: direct" in text
+    assert "npm" not in text and "release" not in text.lower()
+
+
+def test_coordinator_qualifies_trusted_run_and_unrolls_two_repairs() -> None:
+    text = workflow_text(COORDINATOR)
+    trigger = text.split("permissions:", 1)[0]
+    assert "workflow_run:" in trigger and "workflows: [CI]" in trigger and "types: [completed]" in trigger
+    assert "pull_request_target:" not in text
+    for guard in (
+        'EXPECTED_REPOSITORY: 404prefrontalcortexnotfound/decent-curl-impersonate',
+        'actions/workflows/ci.yml',
+        'commits/${head_sha}/pulls?per_page=100',
+        'pulls/${pr_number}/files?per_page=100',
+        'actions/runs/${SOURCE_RUN_ID}/jobs?per_page=100',
+        'scripts/updater_policy.py qualify',
+        'persist-credentials: false',
+        'path: candidate',
+        '[dependabot skip]',
+    ):
+        assert guard in text
+    assert text.count("Claude repair 1") == 1
+    assert text.count("Claude repair 2") == 1
+    assert "Claude repair 3" not in text
+    assert text.count("Apply validated repair 1") == 1
+    assert text.count("Apply validated repair 2") == 1
+    assert "Claude mandatory final no-repair review" in text
+    for job in ("dispatch-ci-0", "dispatch-ci-1", "dispatch-ci-2"):
+        block = job_block(text, job)
+        assert "actions: write" in block and "contents: read" in block
+        assert "validation_mode=updater" in block
+        assert "collect-ci" in block
+
+
+def test_claude_and_writer_permissions_are_strictly_separated() -> None:
+    text = workflow_text(COORDINATOR)
+    for job in ("claude-triage-0", "claude-repair-1", "claude-triage-1", "claude-repair-2", "claude-final-review"):
+        block = job_block(text, job)
+        assert "environment: curl-cffi-updater-claude" in block
+        assert "contents: read" in block and "contents: write" not in block
+        assert "claude_code_oauth_token:" in block
+        assert "--model claude-sonnet-4-6" in block
+        assert "Bash" not in re.findall(r"--allowedTools ([^\n]+)", block)[0]
+        assert "display_report: false" in block and "show_full_output: false" in block
+    for job in ("enrich", "writer-1", "writer-2"):
+        block = job_block(text, job)
+        assert "contents: write" in block
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in block
+        assert "claude_code_oauth_token" not in block
+    assert "--allowedTools Read,Edit,Write,Glob,Grep" in job_block(text, "claude-repair-1")
+    assert "--allowedTools Read,Glob,Grep" in job_block(text, "claude-final-review")
+
+
+def test_terminal_status_and_native_auto_merge_are_exact_and_release_free() -> None:
+    text = workflow_text(COORDINATOR)
+    status = job_block(text, "terminal-status")
+    merge = job_block(text, "native-auto-merge")
+    assert "statuses: write" in status and '-f context="Updater policy"' in status
+    assert "contents: write" not in status
+    assert "--auto --squash --match-head-commit" in merge
+    assert "CURL_CFFI_UPDATER_ENABLED == 'true'" in merge
+    assert "CURL_CFFI_UPDATER_AUTO_MERGE == 'true'" in merge
+    for forbidden in ("--admin", "npm publish", "gh release", "git tag", "pull_request_target:"):
+        assert forbidden not in text
+    assert "package.json" not in merge and "publish.yml" not in merge
+
+
+def test_privileged_workflows_forbid_api_key_names_and_mutable_actions() -> None:
+    text = workflow_text(CI) + workflow_text(COORDINATOR)
+    for forbidden in ("ANTHROPIC_API_KEY", "anthropic_api_key", "pull_request_target:"):
+        assert forbidden not in text
+    assert not re.search(r"^\s*- uses:\s*[^\s#]+@(?![0-9a-f]{40}(?:\s|$))", text, re.MULTILINE)
 
 
 def test_smoke_is_manual_exact_head_and_always_cleans_up() -> None:

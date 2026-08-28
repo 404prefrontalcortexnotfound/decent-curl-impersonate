@@ -152,6 +152,23 @@ gh api --paginate --slurp "repos/${repository}/rules/branches/main?per_page=100"
 
 A successful query prints `true`; failure or missing contexts returns a nonzero status. Configure the active ruleset and allow GitHub Actions to create and approve pull requests before running the smoke.
 
+### Weekly curl-cffi updater (disabled rollout)
+
+Dependabot is the only version-discovery and pull-request producer. Its weekly `uv` update may initially modify exactly `pyproject.toml` and `uv.lock`. Trusted code from `main` verifies that two-file shape, then mechanically owns exactly three enrichment files: `upstream/curl_cffi.lock.json`, `upstream/curl_impersonate.lock.json`, and `THIRD_PARTY_NOTICES.md`. The final dependency pull request must contain exactly those five regular modified files. A repair may touch only the three enrichment files; it cannot change either Dependabot-owned file.
+
+Initial Dependabot CI and exact-head coordinator dispatches run both `Test (ubuntu-24.04)` and `Test (macos-14)` checks but deliberately use `Updater policy (coordinator pending)`. Only the trusted default-branch coordinator posts the terminal exact `Updater policy` commit status after current-base/current-head qualification, both-OS tests, live fingerprint and advisory providers, package/runtime verification, and final read-only Claude review. Ordinary pull requests and `main` continue to receive the exact `Updater policy` Actions check. Missing, stale, malformed, ambiguous, unavailable-provider, audit, security, or review evidence fails closed.
+
+Two repository variables control rollout:
+
+- `CURL_CFFI_UPDATER_ENABLED=false` is the kill switch. False or missing means the coordinator makes no mutation and posts no status, so an updater pull request remains blocked.
+- `CURL_CFFI_UPDATER_AUTO_MERGE=false` allows a full production observation without requesting merge. Native squash auto-merge is requested only when both variables are exactly `true`, with the evaluated head SHA matched explicitly.
+
+Claude authentication is the existing Actions `CLAUDE_CODE_OAUTH_TOKEN` in the `curl-cffi-updater-claude` environment. Claude jobs have read-only repository permission, no Bash tool, no API-key fallback, and no content-write permission; separate no-secret writer jobs apply validated bounded patches. Rotate or revoke the environment OAuth token through repository environment settings, then leave the kill switch false until an environment-access check succeeds. Do not add a PAT, GitHub App credential, repository-wide OAuth copy, or Anthropic API key.
+
+Enrichment and repair commits contain `[dependabot skip]` so Dependabot may safely rebase or force-push over them; any such move invalidates the old evidence and starts qualification again. To recover, leave both variables false, inspect the public coordinator run and terminal status, rotate OAuth if authentication failed, and request a Dependabot rebase or update rather than manually editing its branch. Never force-push a repair, fabricate a bot PR, downgrade the dependency, or bypass the required contexts.
+
+A dependency merge is not a release. The updater does not change `package.json`, tag, create a GitHub release, dispatch the publish workflow, or publish npm content. Stage 1 smoke and its recovery workflow remain in place until a genuine Dependabot-authored update completes the disabled production observation.
+
 ## Attribution
 
 Original extension code is MIT licensed; see [LICENSE](LICENSE). It depends at runtime on `curl_cffi` and its bundled curl-impersonate, curl, and BoringSSL components. Exact upstream locks and third-party license information are in [`upstream/`](upstream/) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

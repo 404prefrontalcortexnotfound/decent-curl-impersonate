@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       gate_id:
-        description: Unique smoke validation gate identifier
+        description: Unique exact-head validation gate identifier
         required: true
         type: string
       pr_number:
@@ -27,122 +27,239 @@ on:
         type: choice
         options:
           - smoke
+          - updater
 
 permissions:
   contents: read
 
 jobs:
   updater-policy:
-    name: Updater policy
+    name: ${{ ((github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater') || (github.event_name == 'pull_request' && github.actor == 'dependabot[bot]')) && 'Updater policy (coordinator pending)' || 'Updater policy' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read
     steps:
-      - name: Classify and enforce updater dispatch
+      - name: Ordinary policy context
+        if: ${{ github.event_name != 'workflow_dispatch' && !(github.event_name == 'pull_request' && github.actor == 'dependabot[bot]') }}
+        run: echo "Ordinary CI receives the exact required Updater policy check."
+
+      - name: Classify smoke dispatch
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'smoke' }}
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          ACTUAL_REPOSITORY: ${{ github.repository }}
-          EVENT_REPOSITORY: ${{ github.event.repository.full_name }}
           GATE_ID: ${{ inputs.gate_id }}
           PR_NUMBER: ${{ inputs.pr_number }}
           EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
-          VALIDATION_MODE: ${{ inputs.validation_mode }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
           readonly EXPECTED_REPOSITORY="404prefrontalcortexnotfound/decent-curl-impersonate"
-          readonly EXPECTED_SHA="${GITHUB_SHA}"
-
-          if [[ "${EVENT_NAME}" != "workflow_dispatch" ]]; then
-            printf 'Non-dispatch event %s: smoke dispatch policy is not applicable.\n' "${EVENT_NAME}"
-            exit 0
-          fi
-
-          [[ "${ACTUAL_REPOSITORY}" == "${EXPECTED_REPOSITORY}" ]]
-          [[ "${EVENT_REPOSITORY}" == "${EXPECTED_REPOSITORY}" ]]
-          [[ "${GATE_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]]
+          [[ "${GITHUB_REPOSITORY}" == "${EXPECTED_REPOSITORY}" ]]
+          [[ "${GATE_ID}" =~ ^smoke-[A-Za-z0-9._:-]{1,120}$ ]]
           [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
           [[ "${EXPECTED_HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${EXPECTED_HEAD_SHA}" == "${EXPECTED_SHA}" ]]
-          [[ "${VALIDATION_MODE}" == "smoke" ]]
-
+          [[ "${EXPECTED_HEAD_SHA}" == "${GITHUB_SHA}" ]]
           pr_json="$(gh api "repos/${EXPECTED_REPOSITORY}/pulls/${PR_NUMBER}")"
-          [[ "$(jq -r '.state' <<<"${pr_json}")" == "open" ]]
-          [[ "$(jq -r '.base.repo.full_name' <<<"${pr_json}")" == "${EXPECTED_REPOSITORY}" ]]
-          [[ "$(jq -r '.base.ref' <<<"${pr_json}")" == "main" ]]
-          [[ "$(jq -r '.head.repo.full_name' <<<"${pr_json}")" == "${EXPECTED_REPOSITORY}" ]]
-          [[ "$(jq -r '.head.sha' <<<"${pr_json}")" == "${EXPECTED_HEAD_SHA}" ]]
-
-          head_ref="$(jq -r '.head.ref' <<<"${pr_json}")"
-          [[ "${head_ref}" == "automation/token-pr-${GATE_ID}" ]]
-
-          changed_count="$(jq -r '.changed_files' <<<"${pr_json}")"
-          [[ "${changed_count}" -eq 1 ]]
-          files_pages="$(gh api --paginate "repos/${EXPECTED_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" --slurp)"
-          jq -e 'type == "array" and length > 0 and all(.[]; type == "array")' \
-            <<<"${files_pages}" > /dev/null
-          files_json="$(jq 'add' <<<"${files_pages}")"
-          [[ "$(jq 'length' <<<"${files_json}")" -eq "${changed_count}" ]]
-          [[ "$(jq -r '.[0].filename' <<<"${files_json}")" == "uv.lock" ]]
-          [[ "$(jq -r '.[0].status' <<<"${files_json}")" == "modified" ]]
-          [[ "$(jq -r '.[0].additions' <<<"${files_json}")" -eq 1 ]]
-          [[ "$(jq -r '.[0].deletions' <<<"${files_json}")" -eq 0 ]]
-
+          jq -e --arg repo "${EXPECTED_REPOSITORY}" --arg head "${EXPECTED_HEAD_SHA}" --arg gate "${GATE_ID}" '
+            .state == "open" and .base.repo.full_name == $repo and .base.ref == "main" and
+            .head.repo.full_name == $repo and .head.sha == $head and
+            .head.ref == ("automation/token-pr-" + $gate) and .changed_files == 1
+          ' <<<"${pr_json}" >/dev/null
+          files_pages="$(gh api --paginate --slurp "repos/${EXPECTED_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100")"
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "array") and
+            (add | length == 1 and .[0].filename == "uv.lock" and .[0].status == "modified" and .[0].additions == 1 and .[0].deletions == 0)' \
+            <<<"${files_pages}" >/dev/null
           base_sha="$(jq -r '.base.sha' <<<"${pr_json}")"
-          [[ "${base_sha}" =~ ^[0-9a-f]{40}$ ]]
-          tmp_dir="$(mktemp -d)"
-          trap 'rm -rf "${tmp_dir}"' EXIT
-          gh api -H 'Accept: application/vnd.github.raw+json' \
-            "repos/${EXPECTED_REPOSITORY}/contents/uv.lock?ref=${base_sha}" > "${tmp_dir}/base"
-          gh api -H 'Accept: application/vnd.github.raw+json' \
-            "repos/${EXPECTED_REPOSITORY}/contents/uv.lock?ref=${EXPECTED_HEAD_SHA}" > "${tmp_dir}/head"
-          [[ -s "${tmp_dir}/base" ]]
+          tmp_dir="$(mktemp -d)"; trap 'rm -rf "${tmp_dir}"' EXIT
+          gh api -H 'Accept: application/vnd.github.raw+json' "repos/${EXPECTED_REPOSITORY}/contents/uv.lock?ref=${base_sha}" >"${tmp_dir}/base"
+          gh api -H 'Accept: application/vnd.github.raw+json' "repos/${EXPECTED_REPOSITORY}/contents/uv.lock?ref=${EXPECTED_HEAD_SHA}" >"${tmp_dir}/head"
           cp "${tmp_dir}/base" "${tmp_dir}/expected"
-          printf '# updater-ci-dispatch-smoke: %s\n' "${GATE_ID}" >> "${tmp_dir}/expected"
+          printf '# updater-ci-dispatch-smoke: %s\n' "${GATE_ID}" >>"${tmp_dir}/expected"
           cmp --silent "${tmp_dir}/expected" "${tmp_dir}/head"
 
-          printf 'Updater policy accepted gate %s for PR %s at %s.\n' \
-            "${GATE_ID}" "${PR_NUMBER}" "${EXPECTED_HEAD_SHA}"
+      # actions/checkout v4.4.0: 11d5960a326750d5838078e36cf38b85af677262
+      - name: Checkout trusted main policy
+        if: ${{ (github.event_name == 'pull_request' && github.actor == 'dependabot[bot]') || (github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater') }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: main
+          persist-credentials: false
+          path: trusted
+      # actions/checkout v4.4.0
+      - name: Checkout exact updater candidate
+        if: ${{ (github.event_name == 'pull_request' && github.actor == 'dependabot[bot]') || (github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater') }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_head_sha || github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+          path: candidate
+      - name: Classify Dependabot initial candidate
+        if: ${{ github.event_name == 'pull_request' && github.actor == 'dependabot[bot]' }}
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: trusted/scripts/updater_metadata.py verify-initial --base-dir trusted --candidate-dir candidate --base-sha "${BASE_SHA}"
+      - name: Classify exact-head updater candidate
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          GATE_ID: ${{ inputs.gate_id }}
+        run: |
+          set -euo pipefail
+          [[ "${GATE_ID}" =~ ^[0-9]+-[0-9]+-[0-2]-[0-9a-f]{12}$ ]]
+          [[ "${EXPECTED_HEAD_SHA}" == "${GITHUB_SHA}" ]]
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/$(jq -r '.head.ref' <<<"${pr}")")"
+          main_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main")"
+          jq -n --argjson pr "${pr}" --argjson ref "${ref}" --argjson main_ref "${main_ref}" '{pr:$pr,ref:$ref,main_ref:$main_ref}' >"${RUNNER_TEMP}/live.json"
+          base_sha="$(jq -r '.base.sha' <<<"${pr}")"
+          trusted/scripts/updater_policy.py validate-live --evidence "${RUNNER_TEMP}/live.json" --head "${EXPECTED_HEAD_SHA}" --base "${base_sha}" --pr "${PR_NUMBER}"
+          trusted/scripts/updater_metadata.py verify-final --base-dir trusted --candidate-dir candidate --base-sha "${base_sha}"
 
   test:
     name: Test (${{ matrix.os }})
-    needs: updater-policy
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-14]
     runs-on: ${{ matrix.os }}
     steps:
-      # actions/checkout v4.4.0
+      # Pin ledger: actions/checkout v4.4.0
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      # actions/setup-node v4.4.0
+      # Pin ledger: actions/setup-node v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
           cache: npm
-      # oven-sh/setup-bun v2.2.0
+      # Pin ledger: oven-sh/setup-bun v2.2.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: 1.3.14
-      # astral-sh/setup-uv v7.6.0
+      # Pin ledger: astral-sh/setup-uv v7.6.0
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         with:
           version: 0.11.17
           python-version: "3.13"
           enable-cache: true
-      - run: npm ci
-      - run: uv sync --frozen --python 3.13
-      - run: uv run pytest python/tests -q
-      - run: bun test
-      - run: bun run typecheck
-      - run: bun run build
-      - name: Verify generated extension is current
+      - id: npm-ci
+        run: npm ci
+        continue-on-error: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater' }}
+      - id: uv-sync
+        run: uv sync --frozen --python 3.13
+        continue-on-error: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater' }}
+      - id: pytest
+        run: uv run pytest python/tests -q
+        continue-on-error: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater' }}
+      - id: bun-test
+        run: bun test
+        continue-on-error: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater' }}
+      - id: typecheck
+        run: bun run typecheck
+        continue-on-error: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater' }}
+      - id: build
+        run: bun run build
+        continue-on-error: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater' }}
+      - id: dist
+        name: Verify generated extension is current
         run: git diff --exit-code -- dist/index.js
-      - name: Verify npm package contents
+        continue-on-error: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater' }}
+      - id: package
+        name: Verify npm package contents
         shell: bash
         run: |
           npm pack --dry-run --json > "$RUNNER_TEMP/decent-curl-pack.json"
           node scripts/verify-package.mjs "$RUNNER_TEMP/decent-curl-pack.json"
+        continue-on-error: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater' }}
+
+      - id: live
+        name: Live fingerprint gate
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater' }}
+        run: DECENT_CURL_LIVE_TESTS=1 bun test test/live-fingerprint.test.ts
+        continue-on-error: true
+      - id: npm-audit
+        name: Runtime npm advisory gate
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          npm audit --omit=dev --audit-level=low --json >"$RUNNER_TEMP/npm-audit.json"
+          code=$?
+          set -e
+          jq -e '.metadata.vulnerabilities | type == "object" and ([.[]] | all(. == 0))' "$RUNNER_TEMP/npm-audit.json" >/dev/null
+          [[ "$code" -eq 0 ]]
+        continue-on-error: true
+      - id: python-audit
+        name: Frozen runtime Python advisory gate (pip-audit 2.10.1)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv export --frozen --no-dev --format requirements-txt --output-file "$RUNNER_TEMP/runtime-requirements.txt"
+          uv tool run --from pip-audit==2.10.1 pip-audit --requirement "$RUNNER_TEMP/runtime-requirements.txt" --progress-spinner=off --format=json --output="$RUNNER_TEMP/pip-audit.json"
+          jq -e 'type == "object" or type == "array"' "$RUNNER_TEMP/pip-audit.json" >/dev/null
+        continue-on-error: true
+      - id: packed-runtime
+        name: Packed tarball install and runtime/lock probe
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --json >"$RUNNER_TEMP/pack.json"
+          node scripts/verify-package.mjs "$RUNNER_TEMP/pack.json"
+          archive="$(jq -r '.[0].filename' "$RUNNER_TEMP/pack.json")"
+          mkdir -p "$RUNNER_TEMP/packed"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/packed"
+          (cd "$RUNNER_TEMP/packed/package" && uv sync --frozen --python 3.13 --no-dev)
+          if [[ "$RUNNER_OS" == "Windows" ]]; then runtime_python="$RUNNER_TEMP/packed/package/.venv/Scripts/python.exe"; else runtime_python="$RUNNER_TEMP/packed/package/.venv/bin/python"; fi
+          scripts/updater_metadata.py runtime-report --candidate-dir "$RUNNER_TEMP/packed/package" --python-executable "$runtime_python" --output "$RUNNER_TEMP/runtime.json"
+        continue-on-error: true
+      - name: Emit sanitized updater evidence
+        id: evidence
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater' }}
+        shell: bash
+        env:
+          GATE_ID: ${{ inputs.gate_id }}
+          HEAD_SHA: ${{ inputs.expected_head_sha }}
+          OS_NAME: ${{ matrix.os }}
+          NPM_CI: ${{ steps.npm-ci.outcome }}
+          UV_SYNC: ${{ steps.uv-sync.outcome }}
+          PYTEST: ${{ steps.pytest.outcome }}
+          BUN_TEST: ${{ steps.bun-test.outcome }}
+          TYPECHECK: ${{ steps.typecheck.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+          DIST: ${{ steps.dist.outcome }}
+          PACKAGE: ${{ steps.package.outcome }}
+          LIVE: ${{ steps.live.outcome }}
+          NPM_AUDIT: ${{ steps.npm-audit.outcome }}
+          PYTHON_AUDIT: ${{ steps.python-audit.outcome }}
+          RUNTIME: ${{ steps.packed-runtime.outcome }}
+        run: |
+          set -euo pipefail
+          status() { [[ "$1" == success ]] && printf pass || printf fail; }
+          baseline=pass
+          for outcome in "$NPM_CI" "$UV_SYNC" "$PYTEST" "$BUN_TEST" "$TYPECHECK" "$BUILD" "$DIST"; do [[ "$outcome" == success ]] || baseline=fail; done
+          jq -n \
+            --arg gate_id "$GATE_ID" --arg head "$HEAD_SHA" --arg os "$OS_NAME" \
+            --argjson run_id "${GITHUB_RUN_ID}" --argjson job_id "${GITHUB_JOB_ID:-0}" \
+            --arg baseline "$baseline" --arg live "$(status "$LIVE")" --arg npm "$(status "$NPM_AUDIT")" \
+            --arg python "$(status "$PYTHON_AUDIT")" --arg package "$(status "$PACKAGE")" --arg runtime "$(status "$RUNTIME")" \
+            '{schema_version:1,gate_id:$gate_id,head_sha:$head,run_id:$run_id,job_id:$job_id,os:$os,tool_versions:{node:"22",bun:"1.3.14",uv:"0.11.17",python:"3.13",pip_audit:"2.10.1"},gates:{baseline:$baseline,live_fingerprint:$live,npm_audit:$npm,python_audit:$python,package:$package,runtime:$runtime}}' \
+            >"$RUNNER_TEMP/updater-evidence.json"
+      # Pin ledger: actions/upload-artifact v4.6.2
+      - name: Upload sanitized updater evidence
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: updater-evidence-${{ inputs.gate_id }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/updater-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Enforce all updater gates
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.validation_mode == 'updater' }}
+        run: jq -e '[.gates[]] | all(. == "pass")' "$RUNNER_TEMP/updater-evidence.json" >/dev/null

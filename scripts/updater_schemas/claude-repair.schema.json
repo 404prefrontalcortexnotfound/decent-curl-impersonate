@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "decision", "head_sha_before", "attempt", "paths", "summary"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "decision": {"enum": ["patched", "block"]},
+    "head_sha_before": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "attempt": {"enum": [1, 2]},
+    "paths": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 3,
+      "items": {"enum": ["THIRD_PARTY_NOTICES.md", "upstream/curl_cffi.lock.json", "upstream/curl_impersonate.lock.json"]}
+    },
+    "summary": {"type": "string", "minLength": 1, "maxLength": 1000}
+  }
+}

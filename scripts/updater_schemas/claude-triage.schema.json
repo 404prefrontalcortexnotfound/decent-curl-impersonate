@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "decision", "head_sha", "findings", "summary"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "decision": {"enum": ["approve", "repair", "block"]},
+    "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "findings": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {"$ref": "#/$defs/finding"}
+    },
+    "summary": {"type": "string", "minLength": 1, "maxLength": 1000}
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "severity", "category", "path", "line", "evidence", "repairable"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Z0-9_-]{1,40}$"},
+        "severity": {"enum": ["low", "medium", "high", "critical"]},
+        "category": {"enum": ["consistency", "provenance", "license", "runtime", "security", "scope"]},
+        "path": {"type": ["string", "null"], "enum": [null, "upstream/curl_cffi.lock.json", "upstream/curl_impersonate.lock.json", "THIRD_PARTY_NOTICES.md", "pyproject.toml", "uv.lock"]},
+        "line": {"type": ["integer", "null"], "minimum": 1},
+        "evidence": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "repairable": {"type": "boolean"}
+      }
+    }
+  }
+}

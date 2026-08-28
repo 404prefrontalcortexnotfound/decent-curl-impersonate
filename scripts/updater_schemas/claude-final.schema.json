@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "decision", "head_sha", "findings", "security", "provenance", "license", "runtime", "summary"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "decision": {"enum": ["approve", "block"]},
+    "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "findings": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {"$ref": "claude-triage.schema.json#/$defs/finding"}
+    },
+    "security": {"enum": ["pass", "fail"]},
+    "provenance": {"enum": ["pass", "fail"]},
+    "license": {"enum": ["pass", "fail"]},
+    "runtime": {"enum": ["pass", "fail"]},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 1000}
+  }
+}
