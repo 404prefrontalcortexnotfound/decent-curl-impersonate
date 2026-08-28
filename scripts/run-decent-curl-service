@@ -1,0 +1,29 @@
+#!/bin/sh
+
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+repository=$(dirname -- "$script_dir")
+if [ "${1:-}" = "--repo" ]; then
+    if [ "$#" -lt 2 ]; then
+        echo "run-decent-curl-service: --repo needs a path" >&2
+        exit 64
+    fi
+    repository=$2
+    shift 2
+fi
+repository=$(CDPATH= cd -- "$repository" && pwd -P)
+log_dir=${DECENT_CURL_LOG_DIR:-"$HOME/Library/Logs/decent-curl"}
+mkdir -p "$log_dir"
+python_bin=$repository/.venv/bin/python
+
+if [ ! -x "$python_bin" ]; then
+    message="run-decent-curl-service: missing $python_bin. Run: cd $repository && uv sync --frozen --python 3.13"
+    printf '%s\n' "$message" > "$log_dir/startup.log"
+    printf '%s\n' "$message" >&2
+    exit 78
+fi
+
+PYTHONPATH="$repository/python${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+exec "$python_bin" -u -m decent_curl_impersonate.http_server "$@"
