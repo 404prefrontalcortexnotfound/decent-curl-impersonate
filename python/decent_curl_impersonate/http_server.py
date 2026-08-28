@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager, suppress
 from logging import Logger
 from logging.handlers import RotatingFileHandler
 import logging
@@ -32,7 +34,8 @@ from .service_settings import DEFAULT_PORT, HOST, settings_from_environment
 DEFAULT_LOG_BYTES = 5 * 1024 * 1024
 DEFAULT_LOG_BACKUPS = 3
 DEFAULT_SESSION_IDLE_SECONDS = 30 * 60
-_ENGINE_STATE_KEY = "decent_curl.engine"
+DEFAULT_ENGINE_IDLE_SECONDS = 30 * 60
+DEFAULT_ENGINE_SWEEP_SECONDS = 60
 
 
 def configure_logging(
@@ -73,21 +76,35 @@ def configure_logging(
     return logger
 
 
-def _connection_engine(ctx: ServerRequestContext[Any, Any]) -> CurlEngine:
-    """Return the engine owned by this MCP connection."""
-    connection = ctx.session._connection  # type: ignore[attr-defined]
-    engine = connection.state.get(_ENGINE_STATE_KEY)
-    if engine is None:
-        engine = CurlEngine()
-        connection.state[_ENGINE_STATE_KEY] = engine
-        connection.exit_stack.push_async_callback(engine.close)
-    return engine
+def _daemon_engine(ctx: ServerRequestContext[Any, Any]) -> CurlEngine:
+    """Return the engine owned by the HTTP daemon lifespan."""
+    return ctx.lifespan_context["engine"]
 
 
 def create_app(
-    *, session_idle_timeout: float = DEFAULT_SESSION_IDLE_SECONDS
+    *,
+    session_idle_timeout: float = DEFAULT_SESSION_IDLE_SECONDS,
+    engine_idle_timeout: float = DEFAULT_ENGINE_IDLE_SECONDS,
+    engine_sweep_interval: float = DEFAULT_ENGINE_SWEEP_SECONDS,
 ) -> Starlette:
     """Build the official MCP Streamable HTTP ASGI application."""
+    if session_idle_timeout <= 0:
+        raise ValueError("session_idle_timeout must be a positive number of seconds")
+    if engine_sweep_interval <= 0:
+        raise ValueError("engine_sweep_interval must be a positive number of seconds")
+    engine = CurlEngine(idle_timeout=engine_idle_timeout)
+
+    @asynccontextmanager
+    async def lifespan(_: Server[Any]):
+        cleanup = asyncio.create_task(engine.run_idle_cleanup(engine_sweep_interval))
+        try:
+            yield {"engine": engine}
+        finally:
+            cleanup.cancel()
+            with suppress(asyncio.CancelledError):
+                await cleanup
+            await engine.close()
+
     async def list_tools(
         _: Any, __: types.PaginatedRequestParams | None
     ) -> types.ListToolsResult:
@@ -99,7 +116,7 @@ def create_app(
         ctx: ServerRequestContext[Any, Any], params: types.CallToolRequestParams
     ) -> types.CallToolResult:
         result = await _call_tool(
-            _connection_engine(ctx),
+            _daemon_engine(ctx),
             {"name": params.name, "arguments": params.arguments or {}},
         )
         return types.CallToolResult.model_validate(result)
@@ -111,6 +128,7 @@ def create_app(
         SERVER_NAME,
         version=SERVER_VERSION,
         instructions=SERVER_INSTRUCTIONS,
+        lifespan=lifespan,
         on_list_tools=list_tools,
         on_call_tool=call_tool,
     )
@@ -119,9 +137,8 @@ def create_app(
         host=HOST,
         custom_starlette_routes=[Route("/healthz", health, methods=["GET"])],
     )
-    if session_idle_timeout <= 0:
-        raise ValueError("session_idle_timeout must be a positive number of seconds")
     server.session_manager.session_idle_timeout = session_idle_timeout
+    app.state.engine = engine
     return app
 
 

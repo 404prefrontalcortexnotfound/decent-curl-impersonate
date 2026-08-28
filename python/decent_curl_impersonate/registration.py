@@ -6,6 +6,7 @@ import argparse
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -149,9 +150,8 @@ def main() -> None:
         ],
     ]
     if arguments.dry_run:
-        print("claude mcp add --transport http --scope user decent-curl " + service_url)
-        print("codex mcp add decent-curl --url " + service_url)
-        print("grok mcp add --transport http --scope user decent-curl " + service_url)
+        for command in commands:
+            print(shlex.join(command))
         return
 
     snapshots = _config_snapshots()

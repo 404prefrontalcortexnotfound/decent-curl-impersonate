@@ -688,3 +688,68 @@ def test_engine_shutdown_closes_active_websockets() -> None:
             await asyncio.wait_for(disconnected.wait(), timeout=1)
 
     run(scenario())
+
+
+def test_idle_sweep_closes_an_abandoned_websocket() -> None:
+    async def scenario() -> None:
+        disconnected = asyncio.Event()
+
+        async def echo(websocket: object) -> None:
+            try:
+                await websocket.wait_closed()  # type: ignore[attr-defined]
+            finally:
+                disconnected.set()
+
+        async with serve(echo, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            engine = CurlEngine(idle_timeout=0.02)
+            try:
+                connected = await engine.dispatch(
+                    "websocket.connect", {"url": f"ws://127.0.0.1:{port}/echo"}
+                )
+                websocket_id = connected["websocket_id"]
+                await asyncio.sleep(0.03)
+
+                await engine.reap_idle()
+
+                with pytest.raises(EngineError) as unknown:
+                    await engine.dispatch(
+                        "websocket.receive", {"websocket_id": websocket_id}
+                    )
+                assert unknown.value.code == "unknown_websocket"
+                await asyncio.wait_for(disconnected.wait(), timeout=1)
+            finally:
+                await engine.close()
+
+    run(scenario())
+
+
+def test_idle_sweep_does_not_close_an_active_named_session(
+    http_server: str,
+) -> None:
+    async def scenario() -> None:
+        engine = CurlEngine(idle_timeout=0.02)
+        try:
+            created = await engine.dispatch("session.create", {})
+            session_id = created["session_id"]
+            request = asyncio.create_task(
+                engine.dispatch(
+                    "request.execute",
+                    {"url": f"{http_server}/slow", "session_id": session_id},
+                )
+            )
+            await asyncio.sleep(0.03)
+
+            await engine.reap_idle()
+
+            assert await engine.dispatch("session.list", {}) == {
+                "sessions": [{"session_id": session_id, "profile": None}]
+            }
+            assert (await request)["body"] == "late"
+            await asyncio.sleep(0.03)
+            await engine.reap_idle()
+            assert await engine.dispatch("session.list", {}) == {"sessions": []}
+        finally:
+            await engine.close()
+
+    run(scenario())

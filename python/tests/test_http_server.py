@@ -12,6 +12,7 @@ from urllib.request import urlopen
 from mcp import Client
 import pytest
 import uvicorn
+from websockets.asyncio.server import serve
 
 from decent_curl_impersonate.http_server import (
     DEFAULT_PORT,
@@ -185,12 +186,42 @@ def test_http_mcp_sends_binary_body_and_custom_headers(
 
 def test_http_mcp_reuses_named_sessions_within_one_client(
     http_mcp_server_url: str,
+    http_server: str,
+) -> None:
+    async def exercise() -> None:
+        async with Client(f"{http_mcp_server_url}/mcp") as client:
+            created = _tool_json(
+                await client.call_tool("decent_curl_session_create", {})
+            )
+            listed = _tool_json(
+                await client.call_tool("decent_curl_session_list", {})
+            )
+            assert listed["sessions"] == [
+                {"session_id": created["session_id"], "profile": None}
+            ]
+            requested = _tool_json(
+                await client.call_tool(
+                    "decent_curl_request",
+                    {
+                        "url": f"{http_server}/echo",
+                        "session_id": created["session_id"],
+                    },
+                )
+            )
+            assert requested["status"] == 200
+
+    asyncio.run(exercise())
+
+
+def test_legacy_http_mcp_reuses_named_sessions_within_one_client(
+    http_mcp_server_url: str,
 ) -> None:
     async def exercise() -> None:
         async with Client(f"{http_mcp_server_url}/mcp", mode="legacy") as client:
             created = _tool_json(
                 await client.call_tool("decent_curl_session_create", {})
             )
+
             listed = _tool_json(
                 await client.call_tool("decent_curl_session_list", {})
             )
@@ -201,16 +232,89 @@ def test_http_mcp_reuses_named_sessions_within_one_client(
     asyncio.run(exercise())
 
 
-def test_http_mcp_closes_engine_state_after_graceful_client_close(
+def test_http_mcp_explicit_session_close_releases_the_handle(
     http_mcp_server_url: str,
 ) -> None:
     async def exercise() -> None:
-        async with Client(f"{http_mcp_server_url}/mcp", mode="legacy") as client:
+        async with Client(f"{http_mcp_server_url}/mcp") as client:
             created = _tool_json(
                 await client.call_tool("decent_curl_session_create", {})
             )
+            closed = _tool_json(
+                await client.call_tool(
+                    "decent_curl_session_close",
+                    {"session_id": created["session_id"]},
+                )
+            )
+            assert closed == {"session_id": created["session_id"], "closed": True}
+            listed = _tool_json(
+                await client.call_tool("decent_curl_session_list", {})
+            )
+            assert listed["sessions"] == []
 
-        async with Client(f"{http_mcp_server_url}/mcp", mode="legacy") as client:
+    asyncio.run(exercise())
+
+
+def test_default_http_mcp_reuses_websocket_handles_across_calls(
+    http_mcp_server_url: str,
+) -> None:
+    async def exercise() -> None:
+        async def echo(websocket: object) -> None:
+            async for message in websocket:  # type: ignore[attr-defined]
+                await websocket.send(message)  # type: ignore[attr-defined]
+
+        async with serve(echo, HOST, 0) as websocket_server:
+            port = websocket_server.sockets[0].getsockname()[1]
+            async with Client(f"{http_mcp_server_url}/mcp") as client:
+                connected = _tool_json(
+                    await client.call_tool(
+                        "decent_curl_websocket_connect",
+                        {"url": f"ws://{HOST}:{port}/echo"},
+                    )
+                )
+                websocket_id = connected["websocket_id"]
+                sent = _tool_json(
+                    await client.call_tool(
+                        "decent_curl_websocket_send",
+                        {"websocket_id": websocket_id, "message": "hello"},
+                    )
+                )
+                assert sent["sent"] is True
+                received = _tool_json(
+                    await client.call_tool(
+                        "decent_curl_websocket_receive",
+                        {"websocket_id": websocket_id},
+                    )
+                )
+                assert received["message"] == "hello"
+                closed = _tool_json(
+                    await client.call_tool(
+                        "decent_curl_websocket_close",
+                        {"websocket_id": websocket_id},
+                    )
+                )
+                assert closed == {"websocket_id": websocket_id, "closed": True}
+
+    asyncio.run(exercise())
+
+
+def test_http_mcp_keeps_the_transport_idle_timeout_separate() -> None:
+    app = create_app()
+    manager = app.routes[0].endpoint.session_manager
+
+    assert manager.session_idle_timeout == 30 * 60
+    assert app.state.engine._idle_timeout == 30 * 60
+
+
+def test_http_mcp_closes_engine_state_after_idle_timeout() -> None:
+    app = create_app(engine_idle_timeout=0.05, engine_sweep_interval=0.01)
+
+    async def exercise(url: str) -> None:
+        async with Client(f"{url}/mcp") as client:
+            created = _tool_json(
+                await client.call_tool("decent_curl_session_create", {})
+            )
+            await asyncio.sleep(0.15)
             listed = _tool_json(
                 await client.call_tool("decent_curl_session_list", {})
             )
@@ -218,43 +322,24 @@ def test_http_mcp_closes_engine_state_after_graceful_client_close(
                 session["session_id"] for session in listed["sessions"]
             }
 
-    asyncio.run(exercise())
+    with _serve_mcp_app(app) as url:
+        asyncio.run(exercise(url))
 
 
-def test_http_mcp_configures_a_bounded_idle_timeout() -> None:
+def test_http_mcp_shutdown_closes_remaining_engine_resources() -> None:
     app = create_app()
-    manager = app.routes[0].endpoint.session_manager
 
-    assert manager.session_idle_timeout is not None
-    assert 0 < manager.session_idle_timeout <= 30 * 60
-
-
-def test_http_mcp_closes_engine_state_after_idle_timeout() -> None:
-    app = create_app()
-    manager = app.routes[0].endpoint.session_manager
-    manager.session_idle_timeout = 0.05
-
-    async def exercise(url: str) -> None:
-        client = Client(f"{url}/mcp", mode="legacy")
-        await client.__aenter__()
-        try:
+    async def exercise(url: str) -> object:
+        async with Client(f"{url}/mcp") as client:
             created = _tool_json(
                 await client.call_tool("decent_curl_session_create", {})
             )
-            await asyncio.sleep(0.15)
-
-            async with Client(f"{url}/mcp", mode="legacy") as replacement:
-                listed = _tool_json(
-                    await replacement.call_tool("decent_curl_session_list", {})
-                )
-                assert created["session_id"] not in {
-                    session["session_id"] for session in listed["sessions"]
-                }
-        finally:
-            try:
-                await client.__aexit__(None, None, None)
-            except Exception:
-                pass
+            return app.state.engine._sessions[created["session_id"]].session
 
     with _serve_mcp_app(app) as url:
-        asyncio.run(exercise(url))
+        session = asyncio.run(exercise(url))
+        assert session._closed is False
+
+    assert session._closed is True
+    assert app.state.engine._sessions == {}
+    assert app.state.engine._websockets == {}

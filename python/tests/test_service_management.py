@@ -1,5 +1,6 @@
 import os
 import plistlib
+import shlex
 import stat
 import subprocess
 from pathlib import Path
@@ -335,3 +336,50 @@ def test_successful_registration_preserves_unrelated_config(tmp_path: Path) -> N
         updated = path.read_bytes()
         assert updated.startswith(content)
         assert b"updated decent-curl" in updated
+
+
+def test_registration_dry_run_shell_quotes_the_full_service_url(
+    tmp_path: Path,
+) -> None:
+    environment, _ = _registration_environment(tmp_path)
+    service_url = "http://127.0.0.1:8765/mcp?token=one&scope=two"
+    environment["DECENT_CURL_MCP_URL"] = service_url
+
+    result = subprocess.run(
+        [str(ROOT / "scripts/register-mcp-service"), "--dry-run"],
+        text=True,
+        capture_output=True,
+        env=environment,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    expected = [
+        [
+            "claude",
+            "mcp",
+            "add",
+            "--transport",
+            "http",
+            "--scope",
+            "user",
+            "decent-curl",
+            service_url,
+        ],
+        ["codex", "mcp", "add", "decent-curl", "--url", service_url],
+        [
+            "grok",
+            "mcp",
+            "add",
+            "--transport",
+            "http",
+            "--scope",
+            "user",
+            "decent-curl",
+            service_url,
+        ],
+    ]
+    assert result.stdout.splitlines() == [
+        f"Effective MCP URL: {service_url}",
+        *(shlex.join(command) for command in expected),
+    ]

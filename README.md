@@ -70,9 +70,12 @@ without changing them. Both modes report the effective MCP URL. Set
 differs from the selected local port. Start new agent sessions after
 registration so they load the service.
 
-One MCP client reuses one `CurlEngine` across its tool calls. The service closes
-that engine after the client ends its MCP session. It also closes inactive
-client state after 30 minutes.
+The HTTP daemon uses one `CurlEngine` for default modern and legacy MCP calls.
+Named session IDs and WebSocket IDs remain valid across calls. The daemon closes
+each resource after 30 minutes without activity. It does not close a resource
+while an operation uses it. Explicit close calls release idle resources
+immediately, and service shutdown closes all remaining resources. The official
+MCP transport manager has its own separate 30-minute idle limit.
 
 Python service logs are in `~/Library/Logs/decent-curl/service.log`. The service
 rotates the log at 5 MiB and keeps three backups. A missing virtual environment

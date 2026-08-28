@@ -147,7 +147,7 @@ _TOOLS: list[dict[str, Any]] = [
         "description": (
             "Create an in-memory session that keeps cookies and connections "
             "across requests. Pass the returned session_id to later calls. "
-            "Sessions last only for this server process."
+            "The HTTP service closes it after 30 inactive minutes."
         ),
         "inputSchema": {
             "type": "object",
@@ -160,7 +160,10 @@ _TOOLS: list[dict[str, Any]] = [
     {
         "name": "decent_curl_session_list",
         "operation": "session.list",
-        "description": "List open session IDs and their profiles.",
+        "description": (
+            "List open session IDs and their profiles. The HTTP service closes "
+            "inactive sessions and WebSockets after 30 minutes."
+        ),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
