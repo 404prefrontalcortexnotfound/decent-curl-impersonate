@@ -184,6 +184,35 @@ def test_http_mcp_sends_binary_body_and_custom_headers(
     asyncio.run(exercise())
 
 
+def test_http_mcp_accepts_binary_request_body_above_sdk_default_limit(
+    http_mcp_server_url: str,
+    http_server: str,
+) -> None:
+    payload = bytes(range(256)) * (3 * 1024 * 1024 // 256)
+
+    async def exercise() -> None:
+        async with Client(f"{http_mcp_server_url}/mcp", mode="legacy") as client:
+            result = await client.call_tool(
+                "decent_curl_request",
+                {
+                    "url": f"{http_server}/binary",
+                    "method": "POST",
+                    "content_base64": base64.b64encode(payload).decode("ascii"),
+                },
+            )
+
+            assert result.is_error is False
+            engine_result = json.loads(result.content[0].text)
+            echoed = json.loads(engine_result["body"])
+            assert echoed["body_size"] == 3 * 1024 * 1024
+            assert echoed["body_sha256"] == (
+                "f6dd7fec8584ad00219a447071c1fa368"
+                "a1caee4d9c146083d233713ddccd2c0"
+            )
+
+    asyncio.run(exercise())
+
+
 def test_http_mcp_reuses_named_sessions_within_one_client(
     http_mcp_server_url: str,
     http_server: str,

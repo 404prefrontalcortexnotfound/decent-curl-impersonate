@@ -33,6 +33,7 @@ from .service_settings import DEFAULT_PORT, HOST, settings_from_environment
 
 DEFAULT_LOG_BYTES = 5 * 1024 * 1024
 DEFAULT_LOG_BACKUPS = 3
+MAX_REQUEST_BODY_BYTES = 32 * 1024 * 1024
 DEFAULT_SESSION_IDLE_SECONDS = 30 * 60
 DEFAULT_ENGINE_IDLE_SECONDS = 30 * 60
 DEFAULT_ENGINE_SWEEP_SECONDS = 60
@@ -135,6 +136,7 @@ def create_app(
     app = server.streamable_http_app(
         streamable_http_path="/mcp",
         host=HOST,
+        max_request_body_size=MAX_REQUEST_BODY_BYTES,
         custom_starlette_routes=[Route("/healthz", health, methods=["GET"])],
     )
     server.session_manager.session_idle_timeout = session_idle_timeout

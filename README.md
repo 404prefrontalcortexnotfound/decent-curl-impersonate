@@ -31,6 +31,8 @@ The source checkout includes a loopback-only MCP Streamable HTTP service. It
 binds only to `127.0.0.1`. The default MCP URL is
 `http://127.0.0.1:8765/mcp`, and the health URL is
 `http://127.0.0.1:8765/healthz`.
+The MCP endpoint accepts request bodies up to 32 MiB. Base64 content expands
+raw bytes by about one third, and the JSON-RPC envelope also uses this limit.
 
 Set `DECENT_CURL_HTTP_PORT` to use a different port. The service rejects an
 invalid port and any attempt to select a non-loopback host.
