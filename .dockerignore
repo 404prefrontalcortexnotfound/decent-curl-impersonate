@@ -1,0 +1,6 @@
+*
+!pyproject.toml
+!uv.lock
+!python/
+!python/decent_curl_impersonate/
+!python/decent_curl_impersonate/**

@@ -26,6 +26,10 @@ def validate_port(raw_port: str | int | None) -> int:
 
 def settings_from_environment(environment: Mapping[str, str]) -> tuple[str, int]:
     """Read service settings while keeping the bind address loopback-only."""
+    if environment.get("DECENT_CURL_CONTAINER") == "1":
+        if not environment.get("DECENT_CURL_FETCH_TOKEN"):
+            raise ValueError("DECENT_CURL_FETCH_TOKEN is required in container mode")
+        return "0.0.0.0", validate_port(environment.get("DECENT_CURL_HTTP_PORT"))
     requested_host = environment.get("DECENT_CURL_HTTP_HOST", HOST)
     if requested_host != HOST:
         raise ValueError(f"HTTP service host must be {HOST}")
