@@ -160,7 +160,7 @@ Fresh page bodies/visitor identifiers were discarded. There were 33 diagnostic a
 8. **CycleTLS:** Go/JavaScript interfaces and documented H3/WebSocket support, but unversioned default fingerprint, TLS1.2 observation, Canada failure, and NYTimes challenge. GPL-3.0 is an additional deployment consideration.
 9. **uTLS alone:** useful foundation, not a complete engine replacement. HTTP behavior, headers, cookies, proxies, and protocol fallback remain the caller's responsibility. The measured Go HTTP/2 signature differs from the browser-shaped clients.
 
-Tatu already builds wreq with Chrome149 at `/Users/bo/code/tatu/rust/crates/tatu-router/src/net.rs:23`. Its dependency is `wreq=6.0.0-rc.31` (`/Users/bo/code/tatu/rust/crates/tatu-router/Cargo.toml:29`), unlike this upstream snapshot. Existing use reduces unfamiliarity, not acceptance requirements. Keep network exits separate from HTTP identity, as the epic requires. Tatu remained unchanged.
+Tatu already builds wreq with Chrome149 at `/Users/bo/code/tatu/rust/crates/tatu-router/src/net.rs:23`. Its dependency is `wreq=6.0.0-rc.31` (`/Users/bo/code/tatu/rust/crates/tatu-router/Cargo.toml:26`), unlike this upstream snapshot. Existing use reduces unfamiliarity, not acceptance requirements. Keep network exits separate from HTTP identity, as the epic requires. Tatu remained unchanged.
 
 Change the retention recommendation when a pinned replacement delivers more verified target content under matched headers/platform/IP, or demonstrates a required capacity/feature advantage. Test cookies, authenticated HTTP/SOCKS proxies, streaming, WebSockets, cancellation, and concurrent memory before migration. Ben owns engine selection at G1; no implementation or deployment occurred.
 
