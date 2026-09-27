@@ -66,7 +66,7 @@ These are code-derived or documented risks unless marked observed.
 - What request volume, latency, retry limit, resource budget, and paid-service ceiling are acceptable?
 - When login, consent, payment, or a challenge requires a person, should unattended work stop, defer, or request help?
 
-Saved workflow definitions, per-site outcomes, account permissions, and monetary costs were not established. Silverfin access was explicitly excluded. `rg --files /Users/bo/code/kalevala/k8s | rg decent-fetch` returned no paths despite live deployments; image-to-source equivalence remains unverified. These gaps prevent an exhaustive site/task inventory, not the separation of needs above.[^brief][^live]
+Saved workflow definitions, per-site outcomes, account permissions, and monetary costs were not established. Silverfin access was explicitly excluded. The fetch deployments are declared in Kalevala `origin/main` at `k8s/apps/pohjola/decent-fetch-eu/` and `k8s/apps/linnunrata-v2/decent-fetch-au/` (commit `91c88294`; `deployment.yaml:43-49` sets 128Mi/512Mi). A first search of an older local checkout missed them. Image-to-source equivalence remains unverified. These gaps prevent an exhaustive site/task inventory, not the separation of needs above.[^brief][^live]
 
 ## Evidence
 
@@ -81,11 +81,11 @@ Local source snapshots: `decent-curl-impersonate@5878f3d3f948`, `tatu@2dca3cd0d6
 [^topology]: `/Users/bo/code/kalevala/omni/pohjola-cluster.yaml:1`; `/Users/bo/code/kalevala/omni/linnunrata-cluster.yaml:1`.
 [^pho]: `/Users/bo/code/pho-app/packages/pieces/common/src/lib/http/core/fetch-http-client.ts:27`, `:45`, `:73`; `/Users/bo/code/pho-app/packages/pieces/core/http/src/lib/actions/send-http-request-action.ts:28`.
 [^schedule]: `/Users/bo/code/pho-app/packages/pieces/core/schedule/src/lib/triggers/cron-expression.trigger.ts:5`.
-[^fetch]: `/Users/bo/code/decent-curl-impersonate/python/decent_curl_impersonate/fetch_api.py:30`, `:50`, `:81`, `:104`.
+[^fetch]: `/Users/bo/code/decent-curl-impersonate/python/decent_curl_impersonate/fetch_api.py:30`, `:44-47`, `:50`, `:81`, `:104`, `:120`, `:142`.
 [^article]: `/Users/bo/code/decent-curl-impersonate/python/decent_curl_impersonate/article_verifier.py:22`, `:33`, `:38`.
 [^engine]: `/Users/bo/code/decent-curl-impersonate/python/decent_curl_impersonate/engine.py:155`, `:215`, `:495`, `:623`; `/Users/bo/code/decent-curl-impersonate/python/decent_curl_impersonate/http_server.py:39`.
 [^tatu]: `/Users/bo/code/tatu/rust/crates/tatu-router/src/sessions.rs:4`, `:93`, `:133`; `/Users/bo/code/tatu/rust/crates/tatu-router/src/net.rs:20`, `:39`, `:178`.
-[^fleet]: `/Users/bo/code/kalevala/k8s/apps/pohjola/tatu/config/fleet.yaml:42`.
+[^fleet]: `/Users/bo/code/kalevala/k8s/apps/pohjola/tatu/config/fleet.yaml:43`.
 [^byparr]: `/Users/bo/code/kalevala/k8s/apps/pohjola/tatu/deployment-byparr.yaml:1`, `:63`, `:85`, `:110`.
 [^ssrf]: `/Users/bo/code/pho-app/packages/server/engine/src/lib/network/ssrf-guard.ts:18`, `:46`.
 [^policy]: `/Users/bo/code/kalevala/k8s/apps/pohjola/tatu/ciliumnetworkpolicy.yaml:395`, `:452`.
