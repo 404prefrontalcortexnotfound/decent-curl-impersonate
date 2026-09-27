@@ -18,13 +18,13 @@ All live requests used plain `/usr/bin/curl` from Blackfin, one GET per host, at
 
 The custom identity code is per-publisher patching of a symptom. Of the four `curl_cffi` and CA-repair call sites, three target publishers that no longer fail, and none is needed for any source that has an API or feed.
 
-## 2. Three corrections to our own measurements
+## 2. Our own records, checked again
 
 | Prior record | Measured today, plain `/usr/bin/curl` | Reading |
 | --- | --- | --- |
 | ANVISA CSV: `curl 60` local issuer failure, `gap_tls_certificate_chain` (`loaders/global_inventory.json:51,58,61`) | `200`, 8,336,355 bytes. Chain is now complete: leaf + Sectigo R36 + Root R46, `Verify return code: 0 (ok)` | Publisher fixed it. The CA-repair path is dead weight. |
 | TGA refused plain `requests` (`loaders/common.py:66-70`) | `https://www.tga.gov.au/resources/artg` returned `200`, 198,311 bytes to plain curl | Intermittent or region-dependent. Do not build on either answer. |
-| Swissmedic listing 404 at the path in `loaders/sm.py:40` | The `.asp` path returns `200`, 146,087 bytes; the clean `/en/...` path I guessed first returned 404 | Redirect-era URLs. Record the measured URL, not the pretty one. |
+| Swissmedic listing URL at `loaders/sm.py:40` | `200`, 146,087 bytes | Our record is correct. No change. |
 
 Two more measured facts that change the design:
 
@@ -60,17 +60,17 @@ Browser-shaped HTTP column: "no" means plain curl returned real content today. "
 | CDSCO (IN) | dated new-drug approval PDFs | HTML index of PDFs | `https://www.cdsco.gov.in/opencms/opencms/en/Approval_new/Approved-New-Drugs/` | no, `200` | unverified |
 | HSA (SG) | medical devices | HTML register, CloudFront 301 to trailing slash | `https://www.hsa.gov.sg/medical-devices/` | no after redirect | unverified |
 | Medsafe (NZ) | approvals, recalls | page monitoring only | `https://www.medsafe.govt.nz/hot/recalls/recallsearch.asp` | no, `200` | unverified |
-| SAHPRA (ZA) | registered health products | HTML tables | `https://www.sahpra.org.za/databases-registers/` | **blocked**: `curl: (28)` timeout at 30 s, matches `global_inventory.json:109,111` | unverified |
-| COFEPRIS (MX) | registro sanitario | visor | `https://registros.cofepris.gob.mx/` | **blocked**: `curl: (28)` timeout at 30 s, matches `global_inventory.json:178,180` | unverified |
+| SAHPRA (ZA) | registered health products | HTML tables | `https://www.sahpra.org.za/databases-registers/` | **blocked**: `curl: (28)` timeout at 30 s. `global_inventory.json:111` recorded `curl 60` (SSL) for this URL and `curl 28` for `registered-health-products` | unverified |
+| COFEPRIS (MX) | registro sanitario | visor | `https://registros.cofepris.gob.mx/` | **blocked**: `curl: (28)` timeout at 30 s. `global_inventory.json:180` records a timeout only for the legacy BRSDM; the inventory did not finish the visor GET | unverified |
 | EUDAMED | EU devices and vigilance | none public | `https://ec.europa.eu/tools/eudamed` returns `302` to a registration wall | not reachable | not measured |
 
 **Added beyond `global_inventory.json`:** Medsafe and HSA (both reachable, neither in the inventory), the Health Canada recalls open dataset, the EMA and MHRA feeds, the Health Canada and Australian CKAN discovery APIs, and the openFDA device and recall endpoints. **Licence finding that changes scope:** openFDA device data embeds GMDN® content under a separate GMDN Agency licence, and `open.fda.gov/terms/` states that extracting GMDN Content to build commercial services, alternate categorisation, or for AI training needs that licence first. Device analytics from openFDA are therefore not free to use as I assumed. Confirm per-field before anything derived is published.
 
 ## 4. How many regulators actually need browser-shaped HTTP
 
-Of 26 measured endpoints, three refused plain curl: NMPA data search (412), SAHPRA (timeout), COFEPRIS (timeout). Two are unreachable by any client and need a network answer, not an identity answer. **One, NMPA, is an identity problem.** Two more are unmeasured and should be treated as unknown.
+Of 24 measured endpoints, three refused plain curl: NMPA data search (412), SAHPRA (timeout), COFEPRIS (timeout). Two are unreachable by any client and need a network answer, not an identity answer. **One, NMPA, is an identity problem.** Two more are unmeasured and should be treated as unknown.
 
-This is the load-bearing result for the epic. For this use case, browser identity is a rounding error: roughly 4 % of endpoints. The remaining 96 % are API keys, CSV files, feeds, or blocked networks. Layer order is therefore feed first, browser last.
+This is the load-bearing result for the epic. For this use case, browser identity is a rounding error: 1 of 24 endpoints, about 4 %. The remaining 23 are API keys, CSV files, feeds, or blocked networks. Layer order is therefore feed first, browser last.
 
 ## 5. Recommended architecture
 
