@@ -1,6 +1,6 @@
 # Shared fetch platform: recommendation and evidence
 
-Research snapshot: 2026-09-27. [Brief #36](https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate/issues/36), [epic #31](https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate/issues/31), [problem baseline PR #30](https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate/pull/30). This is a design recommendation, not a deployed platform or a destination-success benchmark.
+Research snapshot: 2026-09-27 UTC. [Brief #36](https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate/issues/36), [epic #31](https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate/issues/31), [problem baseline PR #30](https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate/pull/30). This is a design recommendation, not a deployed platform or a destination-success benchmark.
 
 ## Recommendation
 
@@ -78,7 +78,7 @@ These are proposed controls, not upstream defaults or new business policy. Ben s
 }
 ```
 
-**Authentication and policy.** Derive caller identity from a verified credential, never a caller-supplied field. OPA intersects the request with supplied policy and returns an account lease, transport profile, proxy configuration and limits. Reject raw proxy URLs, cookie imports, TLS-verification overrides and unknown fields. Keep ingress private until G2. Machine credentials must be independently revocable; gateway token validation alone does not establish revocation.[^gateway][^opa][^epic]
+**Authentication and policy.** Derive caller identity from a verified credential, never a caller-supplied field. OPA intersects the request with supplied policy and returns permitted account, transport, exit and limit references. The service resolves those references and issues the account lease. Reject raw proxy URLs, cookie imports, TLS-verification overrides and unknown fields. Keep ingress private until G2. Machine credentials must be independently revocable; gateway token validation alone does not establish revocation.[^gateway][^opa][^epic]
 
 **Account isolation and privacy.** Separate task accounts by default; deny personal accounts without an explicit task-scoped grant. Bind each opaque session handle to caller, task, account, profile and exit lease. Disable automatic account rotation. Keep jars and bodies in task-scoped memory; close them on completion, cancellation or expiry. Disable persistent queues/caches for sensitive payloads, request-body logs, query strings and credential-bearing trace attributes. Do not put personal material in durable scheduler history. A crash loses the session; report that loss instead of silently changing identity. Crawlee storage is configurable, but cleanup and absence of residual material require acceptance tests.[^session][^storage][^epic]
 
@@ -93,6 +93,29 @@ These are proposed controls, not upstream defaults or new business policy. Ben s
 Blackfin shell probe used the actual `create_app(container_mode=True)` ASGI entry point and live HTTPS through this repository's engine; no network mock. Input: `https://example.com/`, only `chrome146`, `curl_cffi 0.15.0`. It completed stages **1 → 5 → 2** before continuing; the last two supplied `session_id` and `egress`. Command:
 
 ```sh
+mkdir -p /tmp/r3c-platform-verify
+cat > /tmp/r3c-platform-verify/probe.py <<'PY'
+import asyncio,json,time,hashlib
+from decent_curl_impersonate.http_server import create_app
+async def main():
+    app=create_app(container_mode=True,fetch_token='local-probe-only')
+    async with app.router.lifespan_context(app):
+        async def probe(extra=None):
+            payload=json.dumps({'url':'https://example.com/','profiles':['chrome146'],**(extra or {})}).encode()
+            messages=[]
+            async def receive(): return {'type':'http.request','body':payload,'more_body':False}
+            async def send(message): messages.append(message)
+            t=time.monotonic()
+            await app({'type':'http','asgi':{'version':'3.0'},'http_version':'1.1','method':'POST','scheme':'http','path':'/v1/fetch','raw_path':b'/v1/fetch','query_string':b'','headers':[(b'authorization',b'Bearer local-probe-only'),(b'content-type',b'application/json')],'server':('local-probe',80),'client':('127.0.0.1',12345),'root_path':''},receive,send)
+            status=messages[0]['status'];d=json.loads(b''.join(m.get('body',b'') for m in messages))
+            assert status==200 and d['status']==200,(status,d.get('status'))
+            return {'http':status,'upstream':d['status'],'label':d['label'],'bytes':d['bytes'],'attempts':len(d['attempts']),'elapsed_s':round(time.monotonic()-t,3),'sha256':hashlib.sha256(d['body'].encode()).hexdigest()}
+        for stage,n in [('one',1),('five',5),('remaining',2)]:
+            t=time.monotonic()
+            rows=await asyncio.gather(*(probe({'session_id':'ignored','egress':'ignored'}) if stage=='remaining' else probe() for _ in range(n)))
+            print(json.dumps({'stage':stage,'count':n,'elapsed_s':round(time.monotonic()-t,3),'results':rows}),flush=True)
+asyncio.run(main())
+PY
 PYTHONPATH="$PWD/python" /Users/bo/code/decent-curl-impersonate/.venv/bin/python /tmp/r3c-platform-verify/probe.py
 ```
 
@@ -114,12 +137,12 @@ Replace our profile ladder, cookie/queue plumbing and crawler backoff with maint
 [^harvest]: `/Users/bo/code/civitai/worker/pull.py:146`; `mine_users.py:24`; `Dockerfile:1`. Kalevala revision above: `k8s/apps/pohjola/drawthings/p3-worker.yaml:11`, `:111`; `p3-worker-cnp.yaml:20`.
 [^tatu]: `/Users/bo/code/tatu/rust/crates/tatu-router/src/net.rs:20`; `sessions.rs:4`, `:186`; `/Users/bo/code/tatu/rust/README.md:3`.
 [^byparr]: Kalevala revision above: `k8s/apps/pohjola/tatu/deployment-byparr.yaml:1`, `:65`.
-[^crawlee]: [HTTP clients](https://crawlee.dev/python/docs/guides/http-clients), [web-server integration](https://crawlee.dev/python/docs/guides/running-in-web-server).
+[^crawlee]: [HTTP clients](https://crawlee.dev/python/docs/guides/http-clients), [proxies](https://crawlee.dev/python/docs/guides/proxy-management), [web-server integration](https://crawlee.dev/python/docs/guides/running-in-web-server).
 [^session]: [Sessions](https://crawlee.dev/python/docs/guides/session-management), [v1.10.2 HTTP client source](https://github.com/apify/crawlee-python/blob/v1.10.2/src/crawlee/http_clients/_curl_impersonate.py#L151).
 [^throttle]: [Throttling](https://crawlee.dev/python/docs/guides/request-throttling), [v1.10.2 state and dispatch](https://github.com/apify/crawlee-python/blob/v1.10.2/src/crawlee/request_loaders/_throttling_request_manager.py#L87), [crawler scaling](https://crawlee.dev/python/docs/guides/scaling-crawlers).
 [^trace]: [Crawlee telemetry](https://crawlee.dev/python/docs/guides/trace-and-monitor-crawlers).
 [^storage]: [Storage lifecycle](https://crawlee.dev/python/docs/guides/storages).
-[^scrapy]: [Middleware](https://docs.scrapy.org/en/latest/topics/downloader-middleware.html), [AutoThrottle](https://docs.scrapy.org/en/latest/topics/autothrottle.html).
+[^scrapy]: [Cookies](https://docs.scrapy.org/en/latest/topics/cookies.html), [statistics](https://docs.scrapy.org/en/latest/topics/stats.html), [middleware](https://docs.scrapy.org/en/latest/topics/downloader-middleware.html), [AutoThrottle](https://docs.scrapy.org/en/latest/topics/autothrottle.html).
 [^scrapyd]: [Configuration](https://scrapyd.readthedocs.io/en/latest/config.html), [job API](https://scrapyd.readthedocs.io/en/latest/api.html).
 [^spider]: [README](https://github.com/spider-rs/spider), [configuration](https://docs.rs/spider/latest/spider/configuration/struct.Configuration.html), [examples](https://github.com/spider-rs/spider/blob/main/examples/README.md).
 [^crawl4ai]: [Current server migration](https://github.com/unclecode/crawl4ai/blob/main/deploy/docker/MIGRATION.md), [self-hosting](https://docs.crawl4ai.com/core/self-hosting/), [dispatcher](https://docs.crawl4ai.com/advanced/multi-url-crawling/), [HTTP configuration](https://docs.crawl4ai.com/api/parameters/).
