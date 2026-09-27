@@ -38,13 +38,13 @@ issue's "Do not read" list was not read.
 | WebSocket close with code and reason | all | `engine.py:422` | yes — `test_websocket_close_unblocks_an_active_receive_with_custom_close_data` | code must be an integer 0–65535 |
 | Proxy, per request and per socket | all | `engine.py:732`, `engine.py:282` | no | forwarded to curl; proxy credentials are not redacted in any result |
 | TLS verification toggle | all | `engine.py:733` | no | no test names `verify: false` |
-| Per-call timeout | all | `engine.py:850` | yes — `test_timeout_has_stable_mapping_without_request_secrets` | must be a non-negative number; `bool` rejected |
+| Per-call timeout | all | `engine.py:851` | yes — `test_timeout_has_stable_mapping_without_request_secrets` | must be a non-negative number; `bool` rejected |
 | Response header and cookie redaction | all | `engine.py:85`, `engine.py:798`, `engine.py:805` | yes — `test_named_session_reuses_cookies_but_never_returns_values` | 4 header names; cookies return name and domain only |
 | Worker-metadata redaction | Pi tool | `protocol.py:21` | yes — `test_redact_recursively_replaces_sensitive_values_case_insensitively` | 8 keys, recursive |
 | Body spill file on truncation | Pi tool | `src/tools.ts:283` | yes — `test_spills a body over 50 KB and includes a full-output notice` | head truncation; file 0600 in a 0700 temp dir |
 | Non-browser fingerprint warning | Pi tool | `src/tools.ts:135`, `src/tools.ts:278` | yes — `test_returns a machine-visible warning when no browser profile was used` | text only, not a block |
 | URL query stripping from Pi metadata | Pi tool | `src/tools.ts:329` | yes — `test_sanitizes request and download result URLs` | scheme, host and path only |
-| Stable error codes | all | `worker-client.ts:16`, `engine.py:826` | yes — `test_unknown_session_and_operation_have_stable_errors` | 18 codes; unknown codes collapse to `worker_error` |
+| Stable error codes | all | `worker-client.ts:16` | yes — `test_unknown_session_and_operation_have_stable_errors` | 18 codes; unknown codes collapse to `worker_error` |
 | Retryable flag on errors | all | `engine.py:826` | yes — `test_failure_includes_non_secret_metadata_and_retryability` | true for `timeout` and `network_error` |
 | Fingerprint diagnostic | all | `engine.py:253` | yes — `test_fingerprint_diagnostic_uses_request_result_shape` | default probe `tls.browserleaks.com/json`, forced 30 s timeout |
 | Worker restart after one crash | Pi tool | `src/worker-client.ts:260` | yes — `test(restarts once after a worker crash)` | `failedPermanently` after 2 crashes; 2 s shutdown timeout |
@@ -60,7 +60,7 @@ issue's "Do not read" list was not read.
 | CLI shim `profiles` | skill `cli.sh` | `/Users/bo/.agents/skills/decent-curl/cli.sh:57` | no | reads `BrowserTypeLiteral` directly, not the engine |
 | CLI shim `session-*` | skill `cli.sh` | `/Users/bo/.agents/skills/decent-curl/cli.sh:83` | no | macOS only; decrypts Chrome Safe Storage; not run in this research |
 | LaunchAgent install and check | `scripts/install-launch-agent` | `launch_agent.py:55` | yes — `test_installer_renders_selected_port_and_check_reports_urls` | macOS; label `tech.decent.decent-curl` |
-| MCP registration for three agents | `scripts/register-mcp-service` | `registration.py:105` | yes — `test_registration_check_mode_accepts_all_three_http_entries` | needs `claude`, `codex`, `grok`; rolls back on failure |
+| MCP registration for three agents | `scripts/register-mcp-service` | `registration.py:157` | yes — `test_registration_check_mode_accepts_all_three_http_entries` | needs `claude`, `codex`, `grok`; rolls back on failure |
 | Rotating bounded service log | `scripts/run-decent-curl-service` | `http_server.py:43` | yes — `test_service_logs_rotate_and_stay_bounded` | 5 MiB × 3 in `~/Library/Logs/decent-curl` |
 | Container mode (no `/mcp`) | Dockerfile | `http_server.py:137`, `Dockerfile:8` | yes — `test_container_auth_and_no_mcp` | exposes only `/healthz` and `/v1/fetch` |
 | Extension status and setup commands | Pi tool | `src/index.ts:48`, `src/index.ts:61` | yes — `test(reports package, environment, curl versions, and profile count)` | visible `uv sync`; 1 MiB capture cap |
