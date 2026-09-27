@@ -1,144 +1,130 @@
-# R3c: platform shape for one shared cluster fetch service
+# Shared fetch platform: recommendation and evidence
 
-Research date: 2026-09-27. Brief: [issue #36](https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate/issues/36). Parent: [epic #31](https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate/issues/31). Baseline: [PR #30](https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate/pull/30). Unmeasured claims say so.
+Research snapshot: 2026-09-27. [Brief #36](https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate/issues/36), [epic #31](https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate/issues/31), [problem baseline PR #30](https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate/pull/30). This is a design recommendation, not a deployed platform or a destination-success benchmark.
 
-## 1. The requirements this platform must meet
+## Recommendation
 
-The epic sets four non-negotiables: two separate layers (identity versus egress), a system and not a script, the identity policy, and no JavaScript for now.[^epic] With the measured callers, that gives eight requirements.
+Adopt **Crawlee Python's HTTP-only components behind an authenticated service API**, with **Envoy Gateway** for caller authentication and admission quotas, and **OPA** for supplied, versioned policy. Keep network exits behind a standard proxy interface. Deployment configuration connects that interface to Tatu; neither library needs Tatu-specific code. Keep recurring schedules with callers, including Temporal where already used.[^epic][^crawlee][^gateway][^opa][^tatu]
 
-| # | Requirement | Where it comes from |
-| --- | --- | --- |
-| R1 | Browser-shaped TLS and HTTP identity without a browser | `README.md:3`; epic "no JavaScript" |
-| R2 | Session isolation per caller, one cookie jar and one identity per task | epic identity policy |
-| R3 | Per-host politeness, shared across all callers | epic; measured in §2 |
-| R4 | Egress chosen by policy, never by caller code | epic layer rule; `k8s/apps/pohjola/tatu/config/fleet.yaml:44` |
-| R5 | Several authenticated tenants, revocable individually | measured in §2 |
-| R6 | Metrics, logs and traces per caller and per host | `k8s/pohjola/argocd/apps/kube-prometheus-stack.yaml` |
-| R7 | Scheduling and scaling on Kubernetes | `k8s/pohjola/decent-fetch-eu/deployment.yaml:10` (`replicas: 1`) |
-| R8 | SSRF and internal-address boundary that callers cannot bypass | `k8s/apps/pohjola/decent-fetch-eu/network-policy.yaml:1` |
+Use Crawlee's maintained queue, session, retry and throttling components instead of extending our fetch ladder. This does **not** buy a complete tenant-safe platform: authorization, transient credential handling, redirect enforcement and shared pacing remain integration work. Start with one active scheduler across both regions; scale HTTP workers independently only after every network attempt passes that scheduler. Cross-replica correctness and capacity are **not measured**.[^throttle][^session]
 
-## 2. What the deployed service actually is, measured
+This choice is based on documented fit, active upstream maintenance and a concrete defect in our current contract. It does not establish Crawlee as the fastest engine. Engine choice remains G1/R2's decision; Crawlee supports both `CurlImpersonateHttpClient` and `ImpitHttpClient` without JavaScript.[^crawlee][^epic]
 
-`decent-fetch-eu` (pohjola) and `decent-fetch-au` (linnunrata-v2) are already presented as **one logical service with a region choice**: the EU Service carries selectors, the AU Service carries none and `service.cilium.io/affinity: remote`, so the name resolves to the other cluster (`k8s/apps/pohjola/decent-fetch-eu/services.yaml:1`). Both are one replica, 128 MiB request, 512 MiB limit, and only namespace `phoapp` may call them (`k8s/apps/pohjola/decent-fetch-eu/deployment.yaml:39`, `network-policy.yaml:11`). The public contract is one endpoint, `POST /v1/fetch`, with a single shared bearer token (`python/decent_curl_impersonate/http_server.py:136`, `:100`).
+## Current callers and boundaries
 
-I ran that contract on Blackfin against `https://example.com/` (`/tmp/r3c-measure.py`, curl_cffi 0.15.0, no proxy, no cluster writes):
+Source snapshots: this repository's runtime at `5878f3d`; Tatu `2dca3cd0d6fd`; Civitai `8005ef8c06ee`. `git -C /Users/bo/code/kalevala fetch origin` succeeded; inspected `origin/main` was `ac7c4c45c086f2c80bf8149f85da2caf95f5f673`. Kalevala citations below refer to that revision, not its older working tree. No cluster runtime read occurred in this run.
 
-| Probe | Result |
-| --- | --- |
-| 1 request | HTTP 200, 559 bytes, 6.07 s, `label: "blocked"` |
-| `attempts` for that 200 | three profiles tried (`chrome146`, `safari2601`, `firefox147`), 50/49/78 ms, each `blocker: "non_article_landing"` |
-| 5 concurrent callers, one host | 45.03 s total; individual 33.0/36.0/39.0/42.0/45.0 s |
-| 2 concurrent callers, two hosts | 8.97 s total (6.08 s and 8.97 s) |
-| wrong bearer token | 401 `unauthorized` |
-| `session_id` in the body | 200, silently ignored |
-| `caller` and `egress` in the body | 200, silently ignored |
+- EU and AU fetch manifests each declare one replica. Both ingress policies admit only the pohjola `phoapp` worker identity. Their egress policies allow public HTTP(S), not an exit-service-only route. These are manifest facts, not fresh readiness measurements.[^deploy]
+- The fetch endpoint uses one bearer token, a process-local host clock and an article classifier. Its request schema reads `url`, `profiles` and `timeout_s`; its engine invocation contains no named session. This is insufficient for separate caller identities and arbitrary content.[^fetch]
+- `/Users/bo/code/civitai/worker/pull.py:146-163` creates a Chrome146 `curl_cffi` session with a proxy, optional bearer authentication and four attempts. `:324-325` adds jitter. `mine_users.py:24-25` reuses that transport; `Dockerfile:1-7` packages both scripts. These establish caller requirements, not the deployed image.[^harvest]
+- The cluster harvest manifest instead names `inferencegallery-worker` and a Temporal `WorkerDeployment`; its network policy routes to Tatu gRPC. Do not assume the supplied Python script is the running cluster worker.[^harvest]
+- Tatu constructs Chrome149 `wreq` clients and cookie jars through CONNECT. Its session owner combines exit, cookie jar and fingerprint. Byparr's manifest selects a fixed CONNECT exit and describes a browser/Playwright path. The first mixes identity with exits; the second is outside this epic's HTTP-only scope.[^tatu][^byparr]
 
-Four consequences decide the shape.
+## Candidate comparison
 
-1. **A caller cannot state a need.** The body is read at `python/decent_curl_impersonate/fetch_api.py:104` and only `url`, `profiles` and `timeout_s` exist; extra keys are accepted and discarded. Nothing expresses caller, task, identity, egress or expected result. This is the direct cause of the epic's "a system, not a script" gap.
-2. **The verdict is task-specific but lives in the shared path.** A healthy 200 page came back `blocked` because `classify` (`fetch_api.py:50`) asks an article detector (`python/decent_curl_impersonate/article_verifier.py:22`). The profile ladder then retried all three profiles on a *content* verdict, so a caller wanting a non-article page pays three requests and is told "blocked". A regulator index, an API or a sitemap is not an article.
-3. **Politeness is correct and throughput is the bottleneck.** The per-host lock plus interval (`fetch_api.py:121-125`) serialised five callers into 45 s. Locks are per host, so different hosts do run in parallel (8.97 s for two hosts). One in-flight request per host is defensible, but with `replicas: 1` and in-process state (`fetch_api.py:82-85`) it cannot scale out without losing the guarantee.
-4. **All callers are one principal.** One token for the whole deployment means no per-caller attribution, quota or revocation. The measured 401 is the whole auth story.
+The entries describe documented features, not measured isolation guarantees. “Integration” means the inspected upstream interfaces do not establish the required shared-service property; it does not claim the feature is impossible.
 
-Two further gaps sit outside the service. `decent-fetch` egresses straight to the internet: the Cilium policy allows `0.0.0.0/0` on 80/443 minus private ranges, with no Tatu endpoint in the allow list (`network-policy.yaml:35`). Meanwhile Tatu's router builds its own Chrome-shaped `wreq` client through its own CONNECT proxy (`/Users/bo/code/tatu/rust/crates/tatu-router/src/net.rs:20-37`). The layer rule is broken from both sides today.
+| Candidate | Identity, sessions and caller authentication | Per-host limits and policy-selected egress | Observability, scheduling and Kubernetes scaling |
+|---|---|---|---|
+| **Crawlee Python** | SessionPool and per-session cookies; separate pools/workers and API authorization required for tenants. HTTP impersonation clients available. | Opt-in `ThrottlingRequestManager`: configured domains, crawl-delay, 429 backoff and Retry-After. ProxyConfiguration accepts resolved proxies. Policy evaluation and cross-process clocks need integration. | Statistics/logs, documented OpenTelemetry instrumentation; request queues and resource-based concurrency. Web-server integration is documented. Cron, cluster placement and shared ownership are external.[^crawlee][^session][^throttle][^trace] |
+| **Scrapy + Scrapyd** | Scrapy supports cookie jars; isolate jobs/accounts explicitly. Scrapyd documents one Basic-auth username/password, not tenant authorization. | Per-domain/IP slots, download delay and AutoThrottle; proxy middleware accepts configuration. Shared limits across independent jobs and policy resolution need integration. | Scrapy statistics/logs; Scrapyd schedules and lists processes with SQLite queues. Calendar scheduling, distributed ownership and trace export need integration. Strong alternative for spider jobs; core documentation does not establish a coherent browser TLS profile.[^scrapy][^scrapyd] |
+| **spider-rs** | Cookie configuration exists; separate Website instances are not proof of tenant isolation. OSS service authentication not established. | Delay, concurrency and proxy configuration exist; global limits and identity-to-exit policy not measured. | HTTP-first engine, streaming and distributed examples; cron examples exist. Kubernetes service lifecycle, tenant metrics/log redaction and trace coverage need integration. Avoid automatic browser escalation.[^spider] |
+| **Crawl4AI** | Named sessions and optional browser profiles; current Docker migration requires API-token authentication. Tenant ownership checks not established. | Domain RateLimiter and adaptive dispatcher; proxy configuration exists. Shared replica budgets need integration. | Docker API, monitor and asynchronous jobs. HTTP strategy exists, so it is not exclusively browser-based; no measured impersonating HTTP advantage here. Browser-oriented features and persistence require explicit restriction.[^crawl4ai] |
+| **Firecrawl self-hosted** | Source-aligned baseline disables DB authentication; production auth must be configured. Task-account session isolation not established. | Proxy/engine configuration is deployment work; platform-wide politeness under several tenants not measured. | API/workers, queue databases and Kubernetes/Helm examples; monitoring/scaling remain operator decisions. Baseline bundles Playwright. Larger extraction stack than this HTTP-only requirement; source warns against treating examples as production architecture.[^firecrawl] |
+| **Katana** | Header/cookie input; tenant sessions and API authentication need a wrapper. Experimental JA3 randomization is not proof of a coherent browser identity. | Current README includes per-host and global rate flags, delay and proxy input. Limits across CLI processes and policy selection need integration. | CLI/JSONL output suits discovery jobs; Kubernetes scheduling, service authentication, metrics and tracing need integration. Prefer as a caller, not the shared fetch service.[^katana] |
 
-The Civitai harvester shows what a caller actually needs, and it needs little from us: one session with a fixed profile, a bearer key, retry with backoff on a status list, and a proxy (`/Users/bo/code/civitai/worker/pull.py:146`, `:148-163`, `:28`; `requirements.txt` pins `curl-cffi==0.15.0`). Its politeness is hardcoded per process, so N callers means N times the pressure (`pull.py:150`, `:325`).
+Supporting components fill different gaps. **Envoy Gateway** supplies JWT validation, shared admission limits and proxy telemetry; it supplies neither website accounts nor fetch scheduling. **OPA** evaluates authorization policy but does not provision accounts, store sessions or execute exits. **Temporal** supplies durable workflow/task scheduling; keep it on the caller side so fetch bodies, cookies and personal URLs do not enter workflow history.[^gateway][^opa][^temporal]
 
-## 3. Candidates
+## Maintenance evidence
 
-Maintenance evidence, one request at a time, `gh api repos/<o>/<r>`, `releases/latest`, and a commit count since 2026-06-29 with `per_page=100` (so 100 means "at least 100").
+Fresh sequential GitHub API reads, at least 1.1 seconds between request starts, all exited 0. Repository links identify each upstream. Columns are stars/open issues, SPDX license, latest push, latest GitHub release publication, and default-branch commits since `2026-06-29T00:00:00Z`. A 100-item first page is **≥100**, not an exact count. Release dates do not alone establish package freshness; low activity does not establish abandonment.
 
-| Project | Stars | Licence | Last push | Last release | Commits/90d | Verdict |
-| --- | --- | --- | --- | --- | --- | --- |
-| `apify/crawlee-python` | 9,554 | Apache-2.0 | 2026-09-26 | 2026-09-22 | ≥100 | **Adopt as the engine** |
-| `apify/crawlee` | 25,916 | Apache-2.0 | 2026-09-26 | 2026-08-12 | ≥100 | same monorepo, JS side |
-| `scrapy/scrapy` | 64,498 | BSD-3 | 2026-09-27 | 2026-09-10 | ≥100 | reject for now |
-| `unclecode/crawl4ai` | 84,343 | Apache-2.0 | 2026-09-25 | 2026-09-23 | ≥100 | adopt later, JS phase only |
-| `mendableai/firecrawl` | 185,332 | AGPL-3.0 | 2026-09-27 | 2026-06-19 | ≥100 | reject |
-| `projectdiscovery/katana` | 17,581 | MIT | 2026-09-25 | 2026-08-05 | ≥100 | reject as a service |
-| `spider-rs/spider` | 2,744 | MIT | 2026-09-16 | 2026-03-31 | 51 | reject |
-| `scrapy/scrapyd` | 3,098 | BSD-3 | 2026-09-21 | 2023-02-10 | 5 | reject |
-| `my8100/scrapydweb` | 3,412 | GPL-3.0 | 2025-02-19 | 2025-02-16 | 0 | reject, dormant |
-| `crawlab-team/crawlab` | 12,277 | BSD-3 | 2026-02-10 | 2023-07-26 | 0 | reject, abandoned |
-| `Boris-code/feapder` | 3,739 | none stated | 2026-08-21 | 2025-02-14 | 6 | reject, thin activity |
-| `lexiforest/curl_cffi` | 6,568 | MIT | 2026-09-27 | 2026-09-20 | 50 | already our engine |
-| `deedy5/primp` | 611 | MIT | 2026-09-13 | 2026-09-12 | 46 | watch (R2 owns) |
-| `lwthiker/curl-impersonate` | 7,051 | MIT | 2024-07-18 | 2024-03-02 | 0 | dead, superseded by curl |
-| `mitmproxy/mitmproxy` | 45,163 | MIT | 2026-09-27 | 2026-05-12 | 56 | reject, breaks the layer rule |
-| `open-policy-agent/opa` | 12,279 | Apache-2.0 | 2026-09-26 | 2026-09-24 | ≥100 | **adopt for the policy plane** |
-| `nats-io/nats-server` | 20,776 | Apache-2.0 | 2026-09-25 | 2026-09-17 | ≥100 | **adopt, already deployed** |
-| `kedacore/keda` | 10,550 | Apache-2.0 | 2026-09-27 | 2026-09-23 | ≥100 | optional, only if KEDA is added |
-| `modelcontextprotocol/python-sdk` | 24,409 | MIT | 2026-09-25 | 2026-09-07 | ≥100 | **adopt for the agent face** |
+| Upstream | Stars / open | License | Push | Release | 90d commits |
+|---|---:|---|---|---|---:|
+| [apify/crawlee-python](https://github.com/apify/crawlee-python) | 9554 / 97 | Apache-2.0 | 2026-09-26 | 2026-09-22 | ≥100 |
+| [scrapy/scrapy](https://github.com/scrapy/scrapy) | 64498 / 331 | BSD-3-Clause | 2026-09-27 | 2026-09-10 | ≥100 |
+| [scrapy/scrapyd](https://github.com/scrapy/scrapyd) | 3098 / 8 | BSD-3-Clause | 2026-09-21 | 2023-02-10 | 5 |
+| [spider-rs/spider](https://github.com/spider-rs/spider) | 2744 / 1 | MIT | 2026-09-16 | 2026-03-31 | 51 |
+| [unclecode/crawl4ai](https://github.com/unclecode/crawl4ai) | 84343 / 207 | Apache-2.0 | 2026-09-25 | 2026-09-23 | ≥100 |
+| [firecrawl/firecrawl](https://github.com/firecrawl/firecrawl) | 185340 / 653 | AGPL-3.0 | 2026-09-27 | 2026-06-19 | ≥100 |
+| [projectdiscovery/katana](https://github.com/projectdiscovery/katana) | 17581 / 20 | MIT | 2026-09-25 | 2026-08-05 | ≥100 |
+| [envoyproxy/gateway](https://github.com/envoyproxy/gateway) | 3054 / 791 | Apache-2.0 | 2026-09-25 | 2026-08-28 | ≥100 |
+| [open-policy-agent/opa](https://github.com/open-policy-agent/opa) | 12279 / 305 | Apache-2.0 | 2026-09-26 | 2026-09-24 | ≥100 |
+| [temporalio/temporal](https://github.com/temporalio/temporal) | 23315 / 1010 | MIT | 2026-09-27 | 2026-09-11 | ≥100 |
+| [lexiforest/curl_cffi](https://github.com/lexiforest/curl_cffi) | 6568 / 64 | MIT | 2026-09-27 | 2026-09-20 | 50 |
 
-### Scored against the requirements
+Reproduce each row with these commands, separated by at least one second:
 
-Identity and session isolation. **Crawlee** is the only candidate with a first-class answer: `SessionPool` holds isolated sessions with `max_pool_size: int = 1000` (`src/crawlee/sessions/_session_pool.py:39`) and rotates them on blocked responses, which maps onto R2 exactly. Firecrawl and Crawl4AI both bind identity to a person's browser profile, which the identity policy forbids: Crawl4AI's documentation makes a real Chrome `user-data-dir` with cookies and local storage the recommended path and calls the alternative "not a substitute for true user-based sessions" (`docs.crawl4ai.com/advanced/identity-based-crawling/`). Katana, spider-rs and scrapyd have no session concept.
-
-Browser-shaped TLS identity. **Crawlee wins again**: its Python port ships a `CurlImpersonateHttpClient` wrapping `curl_cffi` (`src/crawlee/http_clients/_curl_impersonate.py:1-17`) with cookie, proxy and HTTP-version handling, and the JS port documents an impersonating client (`apify/crawlee/docs/guides/impit-http-client/`). Adopting Crawlee costs no identity regression, because it is the engine we already ship. Scrapy has no impersonating download handler in core. Katana and spider-rs send plain requests unless a browser backend is chosen.
-
-Per-host politeness. Crawlee gives a request queue, a session pool and a retry budget per crawl. Whether it enforces per-host concurrency limits is **not measured**: the concurrency documentation page refused the request (HTTP 436) and I could not read the source. That is the one gap in the recommendation, and it is small, because our interval is three lines and the traffic is low.
-
-Egress by policy. Crawlee's `ProxyConfiguration` rotates from a list the caller supplies, so policy would be in code. Fix it the Tatu way: give Crawlee one proxy URL whose *user name is the exit name*, and keep the policy where it already lives as data, in `k8s/apps/pohjola/tatu/config/fleet.yaml:44-70` (pools, `exclude_countries`, per-status rest and halve rules). Tatu is already the only path Byparr may use (`deployment-byparr.yaml:63-70`).
-
-Multi-tenant auth. No crawler project has it. Crawl4AI 0.9.x is the strongest: secure by default, a bearer token on every endpoint, loopback binding when the token is missing, declarative hooks because the old Python-string hooks were a remote-code-execution surface (`docs.crawl4ai.com/core/self-hosting/`). Firecrawl's own self-host guide ships `USE_DB_AUTHENTICATION=false` and says the baseline "is not a production architecture" and that authentication must be designed before the API leaves a trusted network (`docs.firecrawl.dev/contributing/self-host`). Crawl4AI still gives one token, not many tenants, so it fails R5 too.
-
-Observability, scheduling, scaling. Crawlee exposes statistics and an event manager. Firecrawl adds a Postgres and RabbitMQ queue; Crawl4AI adds a job queue with webhooks and a dashboard. We already run kube-prometheus-stack, Loki, Argo CD, Kargo, Traefik, authentik, Cilium and NATS with JetStream (`k8s/pohjola/argocd/apps/`, `k8s/apps/pohjola/phosphor/nats.yaml:33` runs `-js -sd /data`). Adding a database to adopt one of these platforms would be a net loss.
-
-## 4. Recommended shape
-
-**One Fetch Plane: a stateless API in front of a Crawlee-based worker pool, with Tatu as the only way out.** One logical service, not two: keep `decent-fetch-eu` and `decent-fetch-au` as the regional addresses of one service, and select the region by policy, not by the caller.
-
-**A caller states its need as data.** A versioned need document, one per task, stored in Git through Argo CD so it is reviewable, with this shape:
-
-```yaml
-task: whimh-weekly
-caller: phoapp-worker          # becomes an authenticated principal, see below
-identity: task-account/whimh   # a named account, never a personal one, by default
-egress: { pool: eu, countries: [AU, NZ, GB, IE] }   # resolved by Tatu policy
-expect: { kind: article, min_words: 300 }          # replaces the article detector
-budget: { max_requests_per_host_per_minute: 20, max_bytes: 5000000, deadline_s: 900 }
-profile: chrome146
+```sh
+gh api --include repos/OWNER/REPO
+gh api --include repos/OWNER/REPO/releases/latest
+gh api --include 'repos/OWNER/REPO/commits?since=2026-06-29T00:00:00Z&per_page=100'
 ```
 
-`expect` is the field the measurement demands. The verdict is hardcoded to articles today and wrong for everything else; putting it in the need moves article detection to the WHIMH task where it belongs and leaves a regulator index asking for `kind: any`.
+## Proposed service contract and ownership
 
-**Exits and identities are chosen by policy.** The API resolves the need against OPA policies, then issues a short-lived job to NATS JetStream. The worker asks Tatu for the exit named in the resolved policy. Tatu never learns who asked, and no caller can name an exit: today's Byparr comment records that a caller's `X-Proxy-Server` header could otherwise route around Tatu (`deployment-byparr.yaml:63`), which is exactly the code-as-policy the epic forbids.
+These are proposed controls, not upstream defaults or new business policy. Ben supplies approved account, destination, region, retention and budget rules; absent policy fails closed.[^epic]
 
-**The SSRF boundary is the dataplane, and it gets stricter.** Keep the Cilium egress `except` list (`network-policy.yaml:35`) because it also blocks DNS rebinding, and change the allow list so the only permitted destination is the Tatu CONNECT port. Today the service reaches the internet directly, so a worker compromise is one hop from anywhere; after the change it is one hop from Tatu only. Keep `public_url` and `check_public_host` (`fetch_api.py:30`, `:44`) as the application layer of the same boundary. The PhoApp in-process guard is not a boundary and should not be treated as one.
+```json
+{
+  "version": 1,
+  "task_id": "opaque-task-id",
+  "policy_ref": "owner-approved-policy@version",
+  "identity_ref": "task-account-alias",
+  "url": "https://example.com/",
+  "method": "GET",
+  "expect": {"kind": "bytes"},
+  "deadline_s": 30
+}
+```
 
-**Several tenants, revocable individually.** Put Traefik with authentik forward-auth in front of the service. Both are already in the clusters (`k8s/pohjola/argocd/apps/traefik.yaml`, `authentif.yaml`, and the existing `linnunrata-authentik-forwardauth.yaml`). The forwarded identity becomes the `caller` field, which turns the measured single principal into per-caller quota, attribution and revocation, and it is a reviewed SSO rather than a hand-rolled bearer. This is the natural gate-G2 object.
+**Authentication and policy.** Derive caller identity from a verified credential, never a caller-supplied field. OPA intersects the request with supplied policy and returns an account lease, transport profile, proxy configuration and limits. Reject raw proxy URLs, cookie imports, TLS-verification overrides and unknown fields. Keep ingress private until G2. Machine credentials must be independently revocable; gateway token validation alone does not establish revocation.[^gateway][^opa][^epic]
 
-**Agents reach it through a thin CLI and one MCP server.** A CLI that renders and signs a need document, plus an MCP server on `modelcontextprotocol/python-sdk` exposing `fetch`, `fetch_batch` and `session_status`. It carries no policy of its own and cannot pick an exit. Locally, `~/.agents/skills/decent-curl/cli.sh` and `mcp.sh` stay as they are; only the cluster route changes.
+**Account isolation and privacy.** Separate task accounts by default; deny personal accounts without an explicit task-scoped grant. Bind each opaque session handle to caller, task, account, profile and exit lease. Disable automatic account rotation. Keep jars and bodies in task-scoped memory; close them on completion, cancellation or expiry. Disable persistent queues/caches for sensitive payloads, request-body logs, query strings and credential-bearing trace attributes. Do not put personal material in durable scheduler history. A crash loses the session; report that loss instead of silently changing identity. Crawlee storage is configurable, but cleanup and absence of residual material require acceptance tests.[^session][^storage][^epic]
 
-**Scaling.** The worker pool scales on NATS queue depth, not pod count, because politeness state must be shared. Do not raise `replicas` on the current deployment: the pacing map is per process (`fetch_api.py:82`), so a second replica doubles the per-host rate. A single NATS-backed scheduler owning per-host permits is the fix, and the one place where we write real code.
+**Politeness and scaling.** One active admission scheduler owns normalized host limits across callers and EU/AU workers. Use Crawlee's throttler for configured domains and 429 handling; reject admission for unconfigured domains. Its state is in-memory, so sharing queue storage does not share throttle clocks. Count every redirect, retry, robots request and profile attempt; disable hidden client retries/redirects or route them back through admission. Gateway caller quotas do not count those outbound attempts. Keep session affinity; a lost scheduler stops dispatch. Horizontal scheduler scaling needs leases, fencing and failover proof before rollout. This deliberate availability limit avoids claiming unproven distributed politeness.[^throttle][^gateway]
 
-## 5. What we stop maintaining
+**Exit and SSRF boundary.** Supply generic CONNECT endpoints through deployment configuration, with no Tatu RPC in the fetch library. Keep the destination TLS handshake in the HTTP client. At every hop, restrict schemes/ports, resolve and validate all IPv4/IPv6 answers, and prevent DNS rebinding at connection time. With remote proxy DNS, enforce destination-address rejection at the proxy/exit too: a worker policy allowing CONNECT cannot inspect its destination. Deny loopback, private, link-local, metadata and cluster/service ranges at the actual outbound dialer. Internal fetch needs a separate authorized service, not a public-fetch bypass. No TLS interception or direct-egress fallback. This extends the existing public-address boundary; proxy-path enforcement is not measured.[^fetch][^deploy]
 
-- The in-process pacing map and its locks, replaced by a shared per-host permit in the scheduler.
-- The universal profile ladder. Retrying all three profiles on a content verdict tripled the cost of a single caller (§2) for no gain. One profile per need, then a scheduler retry.
-- The article detector as shared behaviour. It stays in the WHIMH task and becomes an `expect` implementation.
-- The single shared bearer token and its Infisical secret, replaced by authentik forward-auth.
-- Tatu's embedded `wreq` fetcher (`net.rs:20-37`). After this change Tatu gives exits and nothing else, which is what the epic asks for.
-- The harvester's per-process retry ladder and `HTTPS_PROXY` env var (`pull.py:28`, `:148-163`). It becomes one more need document; it keeps its own parsing.
-- Byparr's pinned exit and per-deployment GeoIP (`deployment-byparr.yaml:63-90`), which become a policy entry and a Tatu-side concern.
+**Interfaces and operations.** CLI and MCP adapters submit the same contract and return bytes/content type, HTTP result and explicit challenge/login/session-loss states. Article acceptance belongs to callers. Keep request IDs, bounded latency/status counters, queue depth and redacted traces; tenant identifiers must be opaque. Apply backpressure, deadlines and byte limits. Caller schedules submit jobs through the API; workers scale by queue age and capacity, with session affinity and the single scheduler constraint.[^fetch][^trace][^temporal]
 
-## 6. What we do not adopt, and why
+## Measurement and acceptance limits
 
-- **Firecrawl self-hosted.** AGPL-3.0, and the vendor's own guide says the default stack has authentication off, no durable storage, and that its anti-bot service is not included. Adopting it means owning a Postgres, a queue and the auth it refuses to ship.
-- **Crawl4AI now, Crawl4AI later.** It is the right answer for use case 5, which the epic defers because it needs JavaScript. Run it later behind this same need contract; do not build a browser service in the meantime.
-- **Crawlab.** 0 commits in 90 days, no release since July 2023. It is exactly the shape we want and it is abandoned.
-- **scrapyd and ScrapydWeb.** scrapyd has 5 commits in 90 days and no release since 2023; ScrapydWeb had 0. scrapy itself is healthy and worth keeping as a library for a future JS-free Spider job.
-- **mitmproxy as the egress broker.** It would be an excellent per-caller identity and exit broker, and it is actively maintained, but it must terminate TLS. That puts a proxy in the identity path, which merges the two layers the epic keeps apart.
-- **n8n or Windmill as the caller face.** Both are healthy workflow engines with their own database. Our callers are agents, not people filling in forms, and the need document is ten lines of YAML.
+Blackfin shell probe used the actual `create_app(container_mode=True)` ASGI entry point and live HTTPS through this repository's engine; no network mock. Input: `https://example.com/`, only `chrome146`, `curl_cffi 0.15.0`. It completed stages **1 → 5 → 2** before continuing; the last two supplied `session_id` and `egress`. Command:
 
-## 7. Not measured, and open for G1
+```sh
+PYTHONPATH="$PWD/python" /Users/bo/code/decent-curl-impersonate/.venv/bin/python /tmp/r3c-platform-verify/probe.py
+```
 
-- Whether Crawlee enforces per-host concurrency limits, as R3 requires. Its docs returned HTTP 436 and the source path was not read. If it does not, three lines of our own cover it.
-- Crawlee's `max_requests_per_second` value and where it is configured: not read.
-- Any real destination acceptance test. Every measurement here used `example.com`, a 559-byte static page, so it proves contract behaviour and pacing, not that any regulator or news site accepts this identity.
-- Cost, latency and volume targets, none of which the brief supplies.
-- Whether the AU Service's remote affinity survives a second replica: not tested, no cluster writes were made.
+Observed output: 1 call in **0.082s**; 5 concurrent calls in **14.998s**; remaining 2 in **6.031s**. All eight returned service/upstream HTTP 200, 559 bytes, one attempt and `label=blocked`. Body SHA256: `ff67a9d764d6a2367a187734e697f6a53217db9a21c101d410a113ca871a299d`. Supplied session/egress fields had no effect, consistent with the source.[^fetch]
 
-G1 needs three decisions: whether the need document is a CRD or an Infisical-backed config, whether `expect` is a small closed set or caller-supplied rules, and whether gate G2 accepts authentik forward-auth as the ingress auth.
+Initial harness exited 1: `ModuleNotFoundError: No module named 'httpx'`. Correction: invoke ASGI directly; no installation needed. Corrected run exited 0, closed the application lifespan and left no service process. Temporary source/probe evidence is under `/tmp/r3c-platform-verify`; no credentials or response bodies were saved.
 
-[^epic]: [Issue #31, "Ben's direction" and "Identity policy"](https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate/issues/31).
+Candidate runtime acceptance, throughput, cross-tenant leakage, cross-region limits, restart privacy and cost are **not measured**. Before implementation, G1 chooses architecture/engine. Before exposure, G2 needs two-caller isolation, account-grant denial, malicious redirects/rebinding, rate accounting including retries, cancellation cleanup and failover tests. No third-party default establishes these guarantees.[^epic]
+
+## What we stop maintaining after acceptance
+
+Replace our profile ladder, cookie/queue plumbing and crawler backoff with maintained components. Remove article-only success from shared transport. Migrate harvester transport retries to the service while keeping parsing and storage with callers. Remove Tatu's browser-shaped fetch/session ownership once consumers migrate to the separated service. Keep Byparr outside this HTTP-only platform. Retain only the contract, policy integration, isolation and network-boundary code that upstream does not supply.[^fetch][^tatu][^epic]
+
+## Sources
+
+[^epic]: [Epic direction and G1/G2](https://github.com/404prefrontalcortexnotfound/decent-curl-impersonate/issues/31).
+[^fetch]: `/Users/bo/orca/workspaces/decent-curl-impersonate/r3c-platform/python/decent_curl_impersonate/fetch_api.py:30`, `:44`, `:50`, `:82`, `:90`, `:104`, `:127`.
+[^deploy]: `/Users/bo/code/kalevala`, revision above: `k8s/apps/pohjola/decent-fetch-eu/deployment.yaml:10`; `k8s/apps/linnunrata-v2/decent-fetch-au/deployment.yaml:10`; each directory's `network-policy.yaml:12`, `:34`. Read with `git show origin/main:PATH`.
+[^harvest]: `/Users/bo/code/civitai/worker/pull.py:146`; `mine_users.py:24`; `Dockerfile:1`. Kalevala revision above: `k8s/apps/pohjola/drawthings/p3-worker.yaml:11`, `:111`; `p3-worker-cnp.yaml:20`.
+[^tatu]: `/Users/bo/code/tatu/rust/crates/tatu-router/src/net.rs:20`; `sessions.rs:4`, `:186`; `/Users/bo/code/tatu/rust/README.md:3`.
+[^byparr]: Kalevala revision above: `k8s/apps/pohjola/tatu/deployment-byparr.yaml:1`, `:65`.
+[^crawlee]: [HTTP clients](https://crawlee.dev/python/docs/guides/http-clients), [web-server integration](https://crawlee.dev/python/docs/guides/running-in-web-server).
+[^session]: [Sessions](https://crawlee.dev/python/docs/guides/session-management), [v1.10.2 HTTP client source](https://github.com/apify/crawlee-python/blob/v1.10.2/src/crawlee/http_clients/_curl_impersonate.py#L151).
+[^throttle]: [Throttling](https://crawlee.dev/python/docs/guides/request-throttling), [v1.10.2 state and dispatch](https://github.com/apify/crawlee-python/blob/v1.10.2/src/crawlee/request_loaders/_throttling_request_manager.py#L87), [crawler scaling](https://crawlee.dev/python/docs/guides/scaling-crawlers).
+[^trace]: [Crawlee telemetry](https://crawlee.dev/python/docs/guides/trace-and-monitor-crawlers).
+[^storage]: [Storage lifecycle](https://crawlee.dev/python/docs/guides/storages).
+[^scrapy]: [Middleware](https://docs.scrapy.org/en/latest/topics/downloader-middleware.html), [AutoThrottle](https://docs.scrapy.org/en/latest/topics/autothrottle.html).
+[^scrapyd]: [Configuration](https://scrapyd.readthedocs.io/en/latest/config.html), [job API](https://scrapyd.readthedocs.io/en/latest/api.html).
+[^spider]: [README](https://github.com/spider-rs/spider), [configuration](https://docs.rs/spider/latest/spider/configuration/struct.Configuration.html), [examples](https://github.com/spider-rs/spider/blob/main/examples/README.md).
+[^crawl4ai]: [Current server migration](https://github.com/unclecode/crawl4ai/blob/main/deploy/docker/MIGRATION.md), [self-hosting](https://docs.crawl4ai.com/core/self-hosting/), [dispatcher](https://docs.crawl4ai.com/advanced/multi-url-crawling/), [HTTP configuration](https://docs.crawl4ai.com/api/parameters/).
+[^firecrawl]: [Source-aligned self-hosting](https://github.com/firecrawl/firecrawl/blob/main/SELF_HOST.md).
+[^katana]: [Current CLI flags](https://github.com/projectdiscovery/katana/blob/dev/README.md).
+[^gateway]: [JWT](https://gateway.envoyproxy.io/docs/tasks/security/jwt-authentication/), [global limits](https://gateway.envoyproxy.io/docs/tasks/traffic/global-rate-limit/), [telemetry](https://gateway.envoyproxy.io/docs/tasks/observability/).
+[^opa]: [OPA/Envoy authorization](https://www.openpolicyagent.org/docs/envoy).
+[^temporal]: [Temporal task queues](https://docs.temporal.io/task-queue).
