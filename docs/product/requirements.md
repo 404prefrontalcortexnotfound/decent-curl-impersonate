@@ -169,7 +169,7 @@ These are the claims this document challenges. They are stated as they appear in
 | A6 | Bounds exist because the code sets `timeout` and paces per host. | `timeout` is per transfer, not per operation; there is no byte or concurrency cap; pacing is per process. | FR-15, FR-18, FR-19, FR-20 |
 | A7 | Destination restriction is a property of the fetch endpoint. | It is not a property of the identity. The engine rejects a bad scheme and URL credentials. The engine, the Pi tool and the loopback MCP service still accept a loopback, link-local, or private address, and a non-standard port. | FR-22 |
 | A8 | Our service code is the weak part, so substituting maintained components fixes it. | The research itself records that authorization, credential handling, redirect enforcement and shared pacing "remain integration work" and that cross-replica behaviour is not measured. Substitution moves the work; it does not remove it. | FR-20, FR-23, FR-24, and slice 11 as a measured option |
-| A9 | Retiring the ladder, the Pi tool, the LaunchAgent, the CLI shim and the registration code is a cleanup task. | Four live consumers depend on those paths, including one outside this repository. Retirement before a tested replacement breaks them silently. | FR-30, FR-31, slice 12 |
+| A9 | Retiring the ladder, the Pi tool, the LaunchAgent, the CLI shim and the registration code is a cleanup task. | Live consumers depend on those paths, including consumers outside this repository. Retirement before a tested replacement breaks them silently. | FR-30, FR-31, slice 12 |
 | A10 | "Redaction" is one guarantee. | Two interfaces redact differently, and the engine forwards proxy credentials without redacting them in any result. | FR-13 |
 | A11 | Retry semantics can stay as they are. | No backoff, no `Retry-After`, no idempotency distinction, and retries are not counted against a destination's pacing on the engine path. | FR-17, FR-20 |
 | A12 | A hop past the redirect budget is an ordinary result. | A chain of redirects returns the 11th hop inside an HTTP 200 response. `output` is assigned on that hop. There is no named exhaustion error. | FR-01, FR-16 |
@@ -356,7 +356,7 @@ Serves: the measured 1-to-8 release lag. P2. Acceptance: UAC-39.
 
 **FR-30 — The parity ledger is authoritative for retirement.**
 Every capability listed in section 5 has a ledger entry naming its consumers, its replacement state, and its rollback path. A capability may be retired only when its replacement has passed the acceptance criteria for the same capability and every named consumer has migrated or has an accepted exception. Research evidence alone never retires an interface.
-Serves: A9, and the five live consumers named in section 5. P0. Acceptance: UAC-40, UAC-41.
+Serves: A9, and the live consumers named in section 5. P0. Acceptance: UAC-40, UAC-41.
 
 **FR-31 — Each migration step is independently reversible.**
 Every migrated capability has a documented rollback that restores the previous path without a data migration, and a proof that the rollback works. Service is not withdrawn from an existing consumer until that consumer's proof passes.
