@@ -35,7 +35,7 @@ The MCP endpoint accepts request bodies up to 32 MiB. Base64 content expands
 raw bytes by about one third, and the JSON-RPC envelope also uses this limit.
 
 Set `DECENT_CURL_HTTP_PORT` to use a different port. The service rejects an
-invalid port and any attempt to select a non-loopback host.
+invalid port and any attempt to select a non-loopback host outside container mode.
 The installer writes the selected port into the LaunchAgent. The registration
 script derives its default MCP URL from the same port.
 
@@ -251,3 +251,23 @@ A successful query prints `true`; failure or missing contexts returns a nonzero 
 ## Attribution
 
 Original extension code is MIT licensed; see [LICENSE](LICENSE). It depends at runtime on `curl_cffi` and its bundled curl-impersonate, curl, and BoringSSL components. Exact upstream locks and third-party license information are in [`upstream/`](upstream/) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Fetch service
+
+`POST /v1/fetch` accepts `url`, optional `profiles`, and optional `timeout_s`
+(1–120 seconds per request). Set `DECENT_CURL_FETCH_TOKEN` and send it as a
+Bearer token. The default ladder is Chrome 146, Safari 26.0.1, then Firefox 147.
+Requests use HTTP/2 negotiation and navigation headers. Responses record the
+actual HTTP version, profile, redirects, HTTPS upgrades, and attempt timings.
+Only verified visible article text receives `label: ok`. Binary bodies use
+base64 with `body_encoding: base64`. Paywalls and login pages stop the ladder.
+
+Container mode (`DECENT_CURL_CONTAINER=1`) requires the token, binds to
+`0.0.0.0:8765`, and exposes only `/v1/fetch` and `/healthz`. The Mac service
+keeps its loopback MCP endpoint. Run one process and one replica per regional
+service to preserve the three-second per-host request interval. Redirects
+share that interval. Only public HTTP(S) URLs on standard ports are accepted.
+Deploy with network egress restrictions that deny private address ranges.
+
+The Docker workflow builds Linux amd64 and arm64. Main pushes publish to
+GHCR with the commit SHA tag; deployments must pin the returned index digest.

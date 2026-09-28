@@ -21,6 +21,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 import uvicorn
 
+from .fetch_api import FetchAPI
 from .engine import CurlEngine
 from .mcp_server import (
     SERVER_INSTRUCTIONS,
@@ -87,6 +88,8 @@ def create_app(
     session_idle_timeout: float = DEFAULT_SESSION_IDLE_SECONDS,
     engine_idle_timeout: float = DEFAULT_ENGINE_IDLE_SECONDS,
     engine_sweep_interval: float = DEFAULT_ENGINE_SWEEP_SECONDS,
+    container_mode: bool = False,
+    fetch_token: str | None = None,
 ) -> Starlette:
     """Build the official MCP Streamable HTTP ASGI application."""
     if session_idle_timeout <= 0:
@@ -94,6 +97,10 @@ def create_app(
     if engine_sweep_interval <= 0:
         raise ValueError("engine_sweep_interval must be a positive number of seconds")
     engine = CurlEngine(idle_timeout=engine_idle_timeout)
+    token = fetch_token or os.environ.get("DECENT_CURL_FETCH_TOKEN")
+    if container_mode and not token:
+        raise ValueError("DECENT_CURL_FETCH_TOKEN is required in container mode")
+    fetch_api = FetchAPI(engine, token)
 
     @asynccontextmanager
     async def lifespan(_: Server[Any]):
@@ -125,6 +132,13 @@ def create_app(
     async def health(_: Request) -> Response:
         return JSONResponse({"status": "ok"})
 
+    routes = [Route("/healthz", health, methods=["GET"]),
+              Route("/v1/fetch", fetch_api.request, methods=["POST"])]
+    if container_mode:
+        app = Starlette(routes=routes, lifespan=lifespan)
+        app.state.engine = engine
+        return app
+
     server = Server(
         SERVER_NAME,
         version=SERVER_VERSION,
@@ -137,7 +151,7 @@ def create_app(
         streamable_http_path="/mcp",
         host=HOST,
         max_request_body_size=MAX_REQUEST_BODY_BYTES,
-        custom_starlette_routes=[Route("/healthz", health, methods=["GET"])],
+        custom_starlette_routes=routes,
     )
     server.session_manager.session_idle_timeout = session_idle_timeout
     app.state.engine = engine
@@ -155,7 +169,7 @@ def main() -> None:
     logger = configure_logging(Path.home() / "Library/Logs/decent-curl")
     logger.info("starting on http://%s:%d/mcp", host, port)
     uvicorn.run(
-        create_app(),
+        create_app(container_mode=os.environ.get("DECENT_CURL_CONTAINER") == "1"),
         host=host,
         port=port,
         log_config=None,
