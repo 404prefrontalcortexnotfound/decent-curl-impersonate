@@ -2,6 +2,8 @@
 
 A Pi extension that exposes browser-impersonated HTTP and WebSocket tools backed by [`curl_cffi`](https://github.com/lexiforest/curl_cffi). It is intended for interoperating with services that require a current browser TLS/HTTP fingerprint. It is not a browser and doesn't execute JavaScript.
 
+**Product requirements:** the proposed product specification, numbered functional requirements and user acceptance criteria are in [`docs/product/requirements.md`](docs/product/requirements.md). That document is a proposal for review, not approved policy.
+
 ## Requirements and installation
 
 - Pi
