@@ -22,7 +22,7 @@ All commands ran on Blackfin in the Orca worktree `product-requirements`, agains
 | --- | --- |
 | `git diff --check origin/main...HEAD` | exit 0, no output. No whitespace errors. |
 | `git diff --name-only origin/main...HEAD` | `README.md`, `docs/product/requirements.md`, `PROGRESS.md`. Documentation only; no application code, dependency, workflow, manifest or deployment file. |
-| Local Markdown link check over the changed files | 55 local links checked, all resolve, including the intra-document anchor. Script kept outside the repository at `/var/folders/s6/vzrzrmrd6w3_n7lqd0w7hhvw0000gn/T/opencode/check_md_links.py`; run as `python3 check_md_links.py . docs/product/requirements.md README.md PROGRESS.md`. |
+| Local Markdown link check over the changed files | 57 local links checked, all resolve, including the intra-document anchor. Script kept outside the repository at `/var/folders/s6/vzrzrmrd6w3_n7lqd0w7hhvw0000gn/T/opencode/check_md_links.py`; run as `python3 check_md_links.py . docs/product/requirements.md README.md PROGRESS.md`. |
 | `git status --short` after staging | Only the three permitted paths. |
 
 No application test suite was run. The change is prose only and touches no code path; the existing suites are unaffected by a new Markdown file and one README line.
