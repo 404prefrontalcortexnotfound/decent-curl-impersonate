@@ -33,9 +33,9 @@ Each was read in the working tree, not taken from the research snapshot.
 
 - `curl_cffi` is pinned at `0.15.0` in `pyproject.toml` and `uv.lock`; package version is `0.2.2`.
 - `fetch_api.py:50-78` folds status, body type, WAF vendor, paywall and article heuristics into one `label`; a working non-article response is labelled `blocked`.
-- `fetch_api.py:113-160` leaves `output` empty when the 10-hop redirect budget is exhausted, then returns it, so that path answers HTTP 200 with `{}`.
+- `fetch_api.py:113-160` follows at most 10 redirects (`range(11)` with `redirect < 10`). The 11th hop assigns `output` from that response and returns it. The handler answers HTTP 200 with the eleventh-hop result, not with `{}`. There is no named exhaustion error.
 - `fetch_api.py:127-131` calls the engine without `session_id`, and `engine.py:_use_session` creates and closes a fresh `AsyncSession` per call, so cookie continuity is lost between redirect hops.
-- `engine.py:_request_kwargs` applies no scheme, port, credential or address validation; only `fetch_api.py:30-47` does.
+- `engine.py:676-679` rejects a scheme other than HTTP or HTTPS, and rejects a username or password in the URL. It does not check the port or the resolved address. Public-address and standard-port checks are only in `fetch_api.py:30-47`.
 - `engine.py:500-509` retries transport errors only, with no backoff and no `Retry-After`.
 - `src/tools.ts:329` strips query and fragment from result URLs; `mcp_server.py:290-315` returns the engine result verbatim, so the two adapters redact differently.
 - `fetch_api.py:82-85` holds pacing in per-process state (`self.last`, `self.locks`), so a destination reached from both regions is paced separately in each.
@@ -53,7 +53,7 @@ Each was read in the working tree, not taken from the research snapshot.
 
 ## Remaining decisions
 
-Recorded in section 17 of the specification. Five are product or business choices reserved for Ben and are not resolved here: D1 product framing, D2 shared verdict versus caller-owned verdict, D3 business-facing threshold values, D4 credential form, D5 personal-account use, D8 policy ownership. D6, D7 and D9 are engineering choices the team resolves, D7 only after a measured defect.
+Recorded in section 17 of the specification. Six are product or business choices reserved for Ben and are not resolved here: D1 product framing, D2 shared verdict versus caller-owned verdict, D3 business-facing threshold values, D4 credential form, D5 personal-account use, D8 policy ownership. D6, D7 and D9 are engineering choices the team resolves, D7 only after a measured defect.
 
 ## Assumptions recorded rather than resolved
 
